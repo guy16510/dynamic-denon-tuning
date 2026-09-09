@@ -74,12 +74,36 @@ test('invalid trace rejects comparison', () => {
   assert.ok(result.issues.some(issue => issue.type === 'invalid_trace'));
 });
 
+test('missing quality evidence rejects comparison', () => {
+  const candidate = dataset(2);
+  delete candidate[0].quality;
+  const result = validateMatchedCoverage(dataset(1), candidate);
+  assert.equal(result.valid, false);
+  assert.ok(result.issues.some(issue => issue.type === 'invalid_trace' && issue.issues.some(value => /quality evidence/.test(value))));
+});
+
 test('failed Atmos evidence rejects comparison', () => {
   const candidate = dataset(2);
   candidate[0].atmos.verified = false;
   const result = validateMatchedCoverage(dataset(1), candidate);
   assert.equal(result.valid, false);
-  assert.ok(result.issues.some(issue => issue.type === 'atmos_failed'));
+  assert.ok(result.issues.some(issue => issue.type === 'atmos_unverified'));
+});
+
+test('missing Atmos evidence rejects comparison', () => {
+  const candidate = dataset(2);
+  delete candidate[0].atmos;
+  const result = validateMatchedCoverage(dataset(1), candidate);
+  assert.equal(result.valid, false);
+  assert.ok(result.issues.some(issue => issue.type === 'atmos_unverified' && issue.actual === null));
+});
+
+test('missing immutable preset identity rejects comparison', () => {
+  const candidate = dataset(2);
+  delete candidate[0].preset;
+  const result = validateMatchedCoverage(dataset(1), candidate);
+  assert.equal(result.valid, false);
+  assert.ok(result.issues.some(issue => issue.type === 'preset_mismatch' && issue.actualPreset === null));
 });
 
 test('missing metric prevents high-confidence acceptance', () => {
