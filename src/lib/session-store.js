@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile, access, copyFile, readdir } from 'node:fs/promises';
 import { constants } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join, resolve, relative, isAbsolute } from 'node:path';
 
 function idNow() {
@@ -8,6 +9,21 @@ function idNow() {
 
 function safeId(value) {
   return String(value || 'unknown').replace(/[^A-Za-z0-9_.-]/g, '_');
+}
+
+function recordDigest(record) {
+  return createHash('sha256').update(JSON.stringify(record)).digest('hex');
+}
+
+function assertAcceptedPointer(pointer, record, pointerPath) {
+  if (!pointer?.recordSha256) throw new Error(`accepted measurement pointer is missing record digest: ${pointerPath}`);
+  if (record.position !== pointer.position || String(record.channel).toUpperCase() !== String(pointer.channel).toUpperCase() || record.rewId !== pointer.rewId || record.attempt !== pointer.attempt) {
+    throw new Error(`accepted measurement pointer does not match immutable record: ${pointerPath}`);
+  }
+  const actualDigest = recordDigest(record);
+  if (actualDigest !== pointer.recordSha256) {
+    throw new Error(`accepted measurement record digest mismatch: ${pointerPath}`);
+  }
 }
 
 export class SessionStore {
@@ -76,13 +92,14 @@ export class SessionStore {
   async acceptMeasurementAttempt(sessionId, recordPath, record) {
     const pointerPath = `measurements/position-${record.position}/${safeId(record.channel)}/accepted.json`;
     const pointer = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       acceptedAt: new Date().toISOString(),
       position: record.position,
       channel: record.channel,
       rewId: record.rewId,
       attempt: record.attempt,
-      recordPath
+      recordPath,
+      recordSha256: recordDigest(record)
     };
     await this.writeJson(sessionId, pointerPath, pointer);
     return { pointerPath, pointer };
@@ -92,9 +109,7 @@ export class SessionStore {
     const pointerPath = `measurements/position-${position}/${safeId(channel)}/accepted.json`;
     const pointer = await this.readJson(sessionId, pointerPath);
     const record = await this.readJson(sessionId, pointer.recordPath);
-    if (record.position !== pointer.position || String(record.channel).toUpperCase() !== String(pointer.channel).toUpperCase() || record.rewId !== pointer.rewId || record.attempt !== pointer.attempt) {
-      throw new Error(`accepted measurement pointer does not match immutable record: ${pointerPath}`);
-    }
+    assertAcceptedPointer(pointer, record, pointerPath);
     return { pointerPath, pointer, record };
   }
 
@@ -114,11 +129,10 @@ export class SessionStore {
         const channelDir = join(positionDir, entry.name);
         if (acceptedOnly) {
           try {
+            const pointerPath = relative(this.path(sessionId, '.'), join(channelDir, 'accepted.json'));
             const pointer = JSON.parse(await readFile(join(channelDir, 'accepted.json'), 'utf8'));
             const record = JSON.parse(await readFile(this.path(sessionId, pointer.recordPath), 'utf8'));
-            if (record.position !== pointer.position || String(record.channel).toUpperCase() !== String(pointer.channel).toUpperCase() || record.rewId !== pointer.rewId || record.attempt !== pointer.attempt) {
-              throw new Error(`accepted measurement pointer does not match immutable record: ${relative(this.path(sessionId, '.'), join(channelDir, 'accepted.json'))}`);
-            }
+            assertAcceptedPointer(pointer, record, pointerPath);
             records.push(record);
           } catch (error) {
             if (error.code !== 'ENOENT') throw error;
