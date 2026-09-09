@@ -21,6 +21,9 @@ export function validateMeasurementRecord(record) {
   if (!record?.rewId) issues.push('missing REW measurement id');
   if (!record?.channel) issues.push('missing expected channel');
   if (!Number.isInteger(record?.position) || record.position < 0) issues.push('invalid microphone position');
-  if (record?.quality && record.quality.valid === false) issues.push(...(record.quality.issues || ['measurement quality gate failed']));
+  if (!record?.measurementType) issues.push('missing measurement type');
+  if (!record?.traces?.frequencyResponse) issues.push('missing frequency response trace');
+  if (!record?.quality) issues.push('missing measurement quality evidence');
+  else if (record.quality.valid !== true) issues.push(...(record.quality.issues || ['measurement quality gate did not affirmatively pass']));
   return { valid: issues.length === 0, issues };
 }
