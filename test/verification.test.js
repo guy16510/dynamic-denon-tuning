@@ -26,6 +26,12 @@ function record(position, channel, { rough = 2, time = 0, thd = 2, preset = 1, v
     rewId: `${preset}-${position}-${channel}`,
     acceptedForOptimization: true,
     atmos: { verified: true },
+    measurementSettings: {
+      command: 'SPL',
+      playbackMode: 'From file',
+      measurementMode: 'Single',
+      stimulus: `/stimuli/${channel}.wav`
+    },
     quality: { valid, issues: valid ? [] : ['bad trace'] },
     summary: { timeOfIRPeakSeconds: time },
     traces: {
@@ -104,6 +110,14 @@ test('missing immutable preset identity rejects comparison', () => {
   const result = validateMatchedCoverage(dataset(1), candidate);
   assert.equal(result.valid, false);
   assert.ok(result.issues.some(issue => issue.type === 'preset_mismatch' && issue.actualPreset === null));
+});
+
+test('missing negotiated REW settings rejects comparison', () => {
+  const candidate = dataset(2);
+  delete candidate[0].measurementSettings;
+  const result = validateMatchedCoverage(dataset(1), candidate);
+  assert.equal(result.valid, false);
+  assert.ok(result.issues.some(issue => issue.type === 'invalid_trace' && issue.issues.some(value => /measurement settings/.test(value))));
 });
 
 test('missing metric prevents high-confidence acceptance', () => {
