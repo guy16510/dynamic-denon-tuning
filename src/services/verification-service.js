@@ -3,6 +3,7 @@ import { constants } from 'node:fs';
 import { resolve } from 'node:path';
 import { finalizeMeasuredComparison } from '../calibration/verification.js';
 import { renderVerificationReport } from '../calibration/report.js';
+import { detectTopology } from '../calibration/topology.js';
 
 async function loadManifest(path) {
   const resolved = resolve(path);
@@ -15,6 +16,10 @@ async function loadManifest(path) {
 function micInstruction(position) {
   if (position === 0) return 'Place the microphone at the exact primary listening position.';
   return `Move the microphone to verification position ${position}, matching the baseline position exactly.`;
+}
+
+function canonicalSet(values) {
+  return [...values].map(String).sort();
 }
 
 function datasetDefinition(state) {
@@ -49,7 +54,7 @@ export class VerificationService {
       sweepManifestPath
     });
     const state = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       sessionId: session.id,
       preset,
       status: 'awaiting_preset',
@@ -70,13 +75,30 @@ export class VerificationService {
   async start({ positions, channels, sweepManifestPath, topology = null }) {
     if (!Number.isInteger(positions) || positions < 1 || positions > 7) throw new Error('positions must be 1-7');
     if (!Array.isArray(channels) || !channels.length) throw new Error('channels are required');
+    const normalizedChannels = detectTopology(null, channels);
+    if (normalizedChannels.confidence !== 'high' || !normalizedChannels.channels.length) {
+      throw new Error(normalizedChannels.blockers?.join(' ') || 'verification channels are not recognized');
+    }
+    const normalizedTopology = detectTopology(null, topology || normalizedChannels.channels);
+    if (normalizedTopology.confidence !== 'high' || !normalizedTopology.channels.length) {
+      throw new Error(normalizedTopology.blockers?.join(' ') || 'verification topology is not recognized');
+    }
+    if (JSON.stringify(canonicalSet(normalizedTopology.channels)) !== JSON.stringify(canonicalSet(normalizedChannels.channels))) {
+      throw new Error('verification topology must exactly match the channels being measured');
+    }
+
     const manifest = await loadManifest(sweepManifestPath);
-    for (const channel of channels) {
+    for (const channel of normalizedChannels.channels) {
       if (!manifest.channels[channel]?.shieldFile || !manifest.channels[channel]?.stimulusPath) {
         throw new Error(`sweep manifest missing shieldFile/stimulusPath for ${channel}`);
       }
     }
-    const definition = { positions, channels: [...channels], sweepManifestPath: manifest.path, topology: topology || [...channels] };
+    const definition = {
+      positions,
+      channels: [...normalizedChannels.channels],
+      sweepManifestPath: manifest.path,
+      topology: [...normalizedTopology.channels]
+    };
     const baseline = await this.createDataset({ preset: 1, ...definition });
     const candidate = await this.createDataset({ preset: 2, ...definition });
     return {
