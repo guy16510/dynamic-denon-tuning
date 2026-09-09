@@ -39,7 +39,7 @@ export function validateMeasurementRecord(record) {
   if (!record?.traces?.frequencyResponse) issues.push('missing frequency response trace');
   if (!record?.quality) issues.push('missing measurement quality evidence');
   else if (record.quality.valid !== true) issues.push(...(record.quality.issues || ['measurement quality gate did not affirmatively pass']));
-  const settingsRequired = Boolean(record?.shieldFile) || record?.measurementType === 'hardware-proof' || record?.measurementType === 'post-calibration-verification';
+  const settingsRequired = record?.measurementType === 'hardware-proof' || record?.measurementType === 'post-calibration-verification';
   if (settingsRequired) {
     const settings = record?.measurementSettings;
     if (!settings) issues.push('missing negotiated REW measurement settings');
