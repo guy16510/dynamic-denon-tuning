@@ -37,11 +37,14 @@ export class MeasurementService {
   }
 
   async buildRecord({ sessionId, position, channel, captured, shieldFile = null, playback = null, atmos = null, manualCapture = false }) {
-    const frequency = await this.rew.trace(captured.id, 'frequency-response');
-    const impulse = await this.rew.trace(captured.id, 'impulse-response').catch(error => ({ unavailable: error.message }));
+    const [frequency, impulse, distortion] = await Promise.all([
+      this.rew.trace(captured.id, 'frequency-response'),
+      this.rew.trace(captured.id, 'impulse-response').catch(error => ({ unavailable: error.message })),
+      this.rew.trace(captured.id, 'distortion').catch(error => ({ unavailable: error.message }))
+    ]);
     const quality = validateTrace(frequency);
     const record = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       capturedAt: new Date().toISOString(),
       position,
       channel,
@@ -52,7 +55,7 @@ export class MeasurementService {
       ...(playback ? { shield: playback } : {}),
       ...(atmos ? { atmos } : {}),
       quality,
-      traces: { frequencyResponse: frequency, impulseResponse: impulse },
+      traces: { frequencyResponse: frequency, impulseResponse: impulse, distortion },
       ...(manualCapture ? { manualCapture: true } : {})
     };
     const gate = validateMeasurementRecord(record);
@@ -64,7 +67,8 @@ export class MeasurementService {
       channel,
       rewId: record.rewId,
       accepted: record.acceptedForOptimization,
-      atmosVerified: atmos?.verified ?? null
+      atmosVerified: atmos?.verified ?? null,
+      distortionAvailable: !distortion.unavailable
     });
     return { completed: true, path, record };
   }

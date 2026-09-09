@@ -33,6 +33,97 @@ export function selectChoice(choices, matchers) {
   return null;
 }
 
+export function decodeFloat32Base64(value) {
+  if (Array.isArray(value)) return value.map(Number).filter(Number.isFinite);
+  if (typeof value !== 'string' || !value.trim()) return [];
+  const bytes = Buffer.from(value.trim(), 'base64');
+  if (!bytes.length || bytes.length % 4 !== 0) return [];
+  const out = new Array(bytes.length / 4);
+  for (let offset = 0, index = 0; offset < bytes.length; offset += 4, index += 1) {
+    out[index] = bytes.readFloatBE(offset);
+  }
+  return out;
+}
+
+function sampleIndices(length, maxPoints, include = []) {
+  if (length <= maxPoints) return Array.from({ length }, (_, index) => index);
+  const step = Math.ceil(length / maxPoints);
+  const indices = [];
+  for (let index = 0; index < length; index += step) indices.push(index);
+  indices.push(length - 1, ...include.filter(index => Number.isInteger(index) && index >= 0 && index < length));
+  return [...new Set(indices)].sort((a, b) => a - b);
+}
+
+function pick(values, indices) {
+  return indices.map(index => values[index]).filter(value => value !== undefined);
+}
+
+function frequencyAxis(data, length) {
+  const startFreq = Number(data?.startFreq ?? data?.startFrequency);
+  const ppo = Number(data?.ppo ?? data?.pointsPerOctave);
+  const freqStep = Number(data?.freqStep ?? data?.frequencyStep);
+  if (!Number.isFinite(startFreq) || startFreq <= 0) return [];
+  if (Number.isFinite(ppo) && ppo > 0) {
+    return Array.from({ length }, (_, index) => startFreq * 2 ** (index / ppo));
+  }
+  if (Number.isFinite(freqStep) && freqStep > 0) {
+    return Array.from({ length }, (_, index) => startFreq + index * freqStep);
+  }
+  return [];
+}
+
+export function decodeRewTrace(kind, payload, { maxPoints = 4000 } = {}) {
+  const outer = payload && typeof payload === 'object' ? payload : { data: payload };
+  const source = outer.data && typeof outer.data === 'object' && !Array.isArray(outer.data) ? outer.data : outer;
+
+  if (kind === 'frequency-response' || kind === 'group-delay') {
+    const magnitude = decodeFloat32Base64(source.magnitude ?? source.magnitudes);
+    const phase = decodeFloat32Base64(source.phase ?? source.phases);
+    const length = magnitude.length || phase.length;
+    if (!length) return payload;
+    const frequency = frequencyAxis(source, length);
+    const indices = sampleIndices(length, maxPoints);
+    return {
+      ...outer,
+      data: {
+        ...source,
+        magnitude: pick(magnitude, indices),
+        ...(phase.length ? { phase: pick(phase, indices) } : {}),
+        ...(frequency.length ? { frequency: pick(frequency, indices) } : {}),
+        decodedFromBase64: typeof (source.magnitude ?? source.magnitudes) === 'string',
+        originalPoints: length
+      }
+    };
+  }
+
+  if (kind === 'impulse-response') {
+    const values = decodeFloat32Base64(source.data ?? source.response ?? source.values);
+    if (!values.length) return payload;
+    let peakIndex = 0;
+    for (let index = 1; index < values.length; index += 1) {
+      if (Math.abs(values[index]) > Math.abs(values[peakIndex])) peakIndex = index;
+    }
+    const startTime = Number(source.startTime ?? source.startTimeSeconds ?? 0);
+    const sampleInterval = Number(source.sampleInterval ?? source.sampleIntervalSeconds ?? (Number(source.sampleRate) > 0 ? 1 / Number(source.sampleRate) : NaN));
+    const indices = sampleIndices(values.length, maxPoints, [peakIndex]);
+    return {
+      ...outer,
+      data: {
+        ...source,
+        data: pick(values, indices),
+        sampleIndices: indices,
+        peakIndex,
+        peakValue: values[peakIndex],
+        peakTimeSeconds: Number.isFinite(sampleInterval) ? startTime + peakIndex * sampleInterval : null,
+        decodedFromBase64: typeof (source.data ?? source.response ?? source.values) === 'string',
+        originalSamples: values.length
+      }
+    };
+  }
+
+  return payload;
+}
+
 function asEntries(measurements) {
   if (Array.isArray(measurements)) return measurements.map((value, index) => [String(index + 1), value]);
   return Object.entries(measurements || {});
@@ -259,7 +350,8 @@ export class RewAdapter {
   }
 
   async trace(id, kind = 'frequency-response') {
-    return this.evoburrow.call('rew_trace', { id: String(id), kind, ppo: 96, smoothing: '1/12', maxPoints: 2000 });
+    const raw = await this.evoburrow.call('rew_trace', { id: String(id), kind, ppo: 96, smoothing: '1/12', maxPoints: 2000 });
+    return decodeRewTrace(kind, raw, { maxPoints: kind === 'impulse-response' ? 4000 : 2500 });
   }
 
   async crossoverAnalysis({ mainId, subId, crossoverHz }) {
