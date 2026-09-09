@@ -1,3 +1,5 @@
+import { access, stat } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { CapabilityError } from '../lib/errors.js';
 
 function unwrapScalar(value) {
@@ -131,6 +133,20 @@ function asEntries(measurements) {
 
 function measurementKey(id, value) {
   return String(value?.uuid || id);
+}
+
+async function waitForNonEmptyFile(path, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    try {
+      const file = await stat(path);
+      if (file.isFile() && file.size > 0) return { size: file.size, mtimeMs: file.mtimeMs };
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    if (Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 250));
+  } while (Date.now() < deadline);
+  throw new Error(`REW archive did not appear as a non-empty file within ${timeoutMs} ms: ${path}`);
 }
 
 export class RewAdapter {
@@ -362,13 +378,28 @@ export class RewAdapter {
     return this.evoburrow.call('rew_multiseat_analysis', { ids: ids.map(String), lowHz, highHz });
   }
 
-  async saveAll(path, note = 'Dynamic Denon tuning raw measurements') {
+  async saveAll(path, note = 'Dynamic Denon tuning raw measurements', { verifyTimeoutMs = 120000 } = {}) {
     if (!path) throw new Error('path is required');
+    try {
+      await access(path, constants.F_OK);
+      throw new Error(`refusing to let REW overwrite an existing archive: ${path}`);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
     const response = await this.request('/measurements/command', {
       method: 'POST',
       body: { command: 'Save all', parameters: [path, note] },
       timeoutMs: 120000
     });
-    return { saved: true, path, response };
+    const file = await waitForNonEmptyFile(path, verifyTimeoutMs);
+    return {
+      saved: true,
+      verified: true,
+      path,
+      size: file.size,
+      mtimeMs: file.mtimeMs,
+      response,
+      rule: 'REW command acceptance is not considered archive success until the requested local .mdat exists and is non-empty.'
+    };
   }
 }
