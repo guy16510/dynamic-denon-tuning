@@ -120,6 +120,17 @@ test('missing negotiated REW settings rejects comparison', () => {
   assert.ok(result.issues.some(issue => issue.type === 'invalid_trace' && issue.issues.some(value => /measurement settings/.test(value))));
 });
 
+test('different negotiated REW settings reject otherwise matched coverage', () => {
+  const candidate = dataset(2);
+  candidate[0].measurementSettings.measurementMode = 'Repeated';
+  const result = validateMatchedCoverage(dataset(1), candidate);
+  assert.equal(result.valid, false);
+  const mismatch = result.issues.find(issue => issue.type === 'measurement_settings_mismatch');
+  assert.ok(mismatch);
+  assert.equal(mismatch.baseline.measurementMode, 'Single');
+  assert.equal(mismatch.candidate.measurementMode, 'Repeated');
+});
+
 test('missing metric prevents high-confidence acceptance', () => {
   const rows = dataset(1).map(row => ({ ...row, traces: { ...row.traces, distortion: { unavailable: 'not captured' } } }));
   const result = deriveMeasuredScore(rows);
