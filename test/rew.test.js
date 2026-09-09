@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { RewAdapter, normalizeChoices, selectChoice, decodeFloat32Base64, decodeRewTrace } from '../src/adapters/rew.js';
 
 function float32Base64(values) {
@@ -128,4 +131,31 @@ test('impulse decoder preserves peak timing while bounding stored samples', () =
   assert.ok(decoded.data.sampleIndices.includes(4321));
   assert.ok(decoded.data.data.length <= 502);
   assert.ok(Math.abs(decoded.data.peakTimeSeconds - (-0.01 + 4321 / 48000)) < 1e-9);
+});
+
+test('saveAll reports success only after a non-empty archive exists', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'rew-save-'));
+  const path = join(root, 'theater.mdat');
+  const adapter = new RewAdapter({ url: 'http://127.0.0.1:4735', measurementMode: 'pro' }, {});
+  adapter.request = async (endpoint, options) => {
+    assert.equal(endpoint, '/measurements/command');
+    assert.equal(options.body.command, 'Save all');
+    await writeFile(path, 'synthetic mdat evidence');
+    return { message: 'Command accepted' };
+  };
+  const result = await adapter.saveAll(path, 'test archive', { verifyTimeoutMs: 1000 });
+  assert.equal(result.saved, true);
+  assert.equal(result.verified, true);
+  assert.ok(result.size > 0);
+});
+
+test('saveAll refuses to overwrite an existing archive', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'rew-save-'));
+  const path = join(root, 'theater.mdat');
+  await writeFile(path, 'existing evidence');
+  const adapter = new RewAdapter({ url: 'http://127.0.0.1:4735', measurementMode: 'pro' }, {});
+  let posted = false;
+  adapter.request = async () => { posted = true; return 'OK'; };
+  await assert.rejects(() => adapter.saveAll(path, 'should not overwrite', { verifyTimeoutMs: 100 }), /refusing to let REW overwrite/);
+  assert.equal(posted, false);
 });
