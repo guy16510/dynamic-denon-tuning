@@ -6,6 +6,10 @@ function unavailable(error) {
   return { unavailable: error?.message || String(error) };
 }
 
+function microphoneUsable(result) {
+  return result?.usable === true || result?.valid === true || result?.ready === true;
+}
+
 export class HardwareProofService {
   constructor({ denon, rew, shield, measurement, sessions }) {
     this.denon = denon;
@@ -82,8 +86,14 @@ export class HardwareProofService {
     }
 
     const microphone = await this.rew.inputLevelCheck({ durationMs: 3000, confirm: true });
-    if (microphone?.usable === false || microphone?.valid === false || microphone?.ready === false) {
-      return { executed: false, blocked: true, plan, microphone, reason: 'REW microphone input proof did not pass. No audio was emitted.' };
+    if (!microphoneUsable(microphone)) {
+      return {
+        executed: false,
+        blocked: true,
+        plan,
+        microphone,
+        reason: 'REW microphone input proof did not provide an affirmative usable/valid/ready result. No audio was emitted.'
+      };
     }
     const session = await this.sessions.create({
       purpose: 'hardware-proof',
@@ -140,6 +150,9 @@ export class HardwareProofService {
   async resume({ sessionId }) {
     const proof = await this.sessions.readJson(sessionId, 'proof/state.json');
     if (proof.status !== 'manual_measurement_required') throw new Error(`hardware proof is not awaiting a manual measurement, status=${proof.status}`);
+    if (!microphoneUsable(proof.microphone)) {
+      return { executed: false, blocked: true, sessionId, reason: 'Stored microphone usability evidence is missing or ambiguous. Re-run the hardware proof preflight.' };
+    }
     const measured = await this.measurement.captureManual({
       sessionId,
       position: 0,
@@ -155,7 +168,9 @@ export class HardwareProofService {
   }
 
   async finalize(sessionId, measured, microphone) {
-    const passed = measured.record.acceptedForOptimization === true && measured.record.atmos?.verified === true;
+    const passed = microphoneUsable(microphone)
+      && measured.record.acceptedForOptimization === true
+      && measured.record.atmos?.verified === true;
     const result = {
       schemaVersion: 1,
       completedAt: new Date().toISOString(),
@@ -168,7 +183,7 @@ export class HardwareProofService {
       quality: measured.record.quality,
       gate: measured.record.gate,
       evidencePath: measured.path,
-      rule: 'A hardware proof passes only when REW captured valid evidence and the receiver reported Atmos during the encoded sweep.'
+      rule: 'A hardware proof passes only when microphone usability is affirmative, REW captured valid evidence, and the receiver reported Atmos during the encoded sweep.'
     };
     const resultPath = await this.sessions.writeJson(sessionId, 'proof/result.json', result);
     const proof = {
