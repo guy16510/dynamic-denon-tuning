@@ -12,7 +12,9 @@ test('hardware proof remains non-audible until explicitly confirmed', async () =
   let measured = false;
   let micCaptured = false;
   const service = new HardwareProofService({
-    denon: {},
+    denon: {
+      async inspect() { return { presetStatus: { activeSpeakerPreset: 1 } }; }
+    },
     rew: {
       async measurementContract() { return { valid: true, blockers: [], selected: { command: 'SPL', playbackMode: 'From file', measurementMode: 'Single' } }; },
       async inputLevelCheck() { micCaptured = true; return { completed: true }; }
@@ -24,7 +26,7 @@ test('hardware proof remains non-audible until explicitly confirmed', async () =
     },
     sessions: {}
   });
-  const result = await service.run({ channel: 'TFL', fileName: 'TFL.wav', stimulusPath, confirmAudible: false });
+  const result = await service.run({ channel: 'TFL', fileName: 'TFL.wav', stimulusPath, expectedPreset: 1, confirmAudible: false });
   assert.equal(result.requiresConfirmation, true);
   assert.equal(measured, false);
   assert.equal(micCaptured, false);
