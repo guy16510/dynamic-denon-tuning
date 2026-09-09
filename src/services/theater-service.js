@@ -131,13 +131,23 @@ export class TheaterService {
     });
 
     await this.sessions.writeJson(session.id, 'baseline/preflight.json', { ...inspect, topology });
-    const baseline = await this.snapshot(session.id);
+    const activePreset = inspect.denon?.presetStatus?.activeSpeakerPreset ?? null;
+    let baselineSnapshot;
+    let baselineSnapshotConfirmed = false;
+    if (activePreset === 1) {
+      baselineSnapshot = await this.snapshot(session.id);
+      baselineSnapshotConfirmed = true;
+    } else {
+      const atStart = await this.denon.snapshot();
+      const path = await this.sessions.writeJson(session.id, 'baseline/avr-at-start.json', atStart);
+      baselineSnapshot = { snapshot: atStart, path };
+    }
+
     let baselineCopy = null;
     if (baselineAdy) baselineCopy = await this.sessions.copyArtifact(session.id, resolve(baselineAdy), 'baseline/calibration.ady');
 
-    const activePreset = inspect.denon?.presetStatus?.activeSpeakerPreset ?? null;
     const workflow = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       sessionId: session.id,
       status: 'awaiting_position',
       phase: 'baseline_complete',
@@ -149,6 +159,8 @@ export class TheaterService {
       completedMeasurements: [],
       rejectedAttempts: [],
       baselineAdy: baselineCopy,
+      baselineSnapshotConfirmed,
+      baselineSnapshotPath: baselineSnapshot.path,
       sweepManifestPath: manifest?.path || null,
       activePresetAtStart: activePreset,
       protectedPreset: 1,
@@ -170,7 +182,12 @@ export class TheaterService {
     }
 
     await this.sessions.writeJson(session.id, 'workflow.json', workflow);
-    await this.sessions.appendEvent(session.id, 'autotune.started', { blockers: workflow.blockers, baseline: baseline.path, topology });
+    await this.sessions.appendEvent(session.id, 'autotune.started', {
+      blockers: workflow.blockers,
+      baselineSnapshot: baselineSnapshot.path,
+      baselineSnapshotConfirmed,
+      topology
+    });
     return { session, workflow };
   }
 
@@ -206,7 +223,14 @@ export class TheaterService {
       if (activePreset !== 1) {
         return { workflow, blocked: true, requiresUser: true, activePreset, instruction: 'Select Speaker Preset 1, then resume.' };
       }
-      if (!ready) return { workflow, requiresUser: true, instruction: workflow.nextAction };
+      if (!workflow.baselineSnapshotConfirmed) {
+        const baseline = await this.snapshot(sessionId);
+        workflow.baselineSnapshotConfirmed = true;
+        workflow.baselineSnapshotPath = baseline.path;
+        workflow.blockers = (workflow.blockers || []).filter(value => !/^Active Speaker Preset/.test(value) && !/^Speaker Preset \d+ is active/.test(value));
+        await this.saveWorkflow(sessionId, workflow, 'baseline.preset1-snapshot', { path: baseline.path, activePreset: 1 });
+      }
+      if (!ready) return { workflow, requiresUser: true, instruction: nextMicInstruction(workflow.currentPosition) };
       if (!workflow.sweepManifestPath) return { workflow, blocked: true, reason: 'sweep manifest missing' };
       const manifest = await loadManifest(workflow.sweepManifestPath);
       workflow.status = 'measuring';
