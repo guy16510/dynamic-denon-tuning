@@ -20,6 +20,37 @@ function decodeMasterVolume(line) {
   return scale - 80;
 }
 
+function presetValue(value) {
+  if (value === 1 || value === 2) return value;
+  const text = String(value ?? '').trim();
+  const match = text.match(/^(?:SPEAKER\s*)?PRESET\s*([12])$/i) || text.match(/^([12])$/);
+  return match ? Number(match[1]) : null;
+}
+
+export function normalizeSpeakerPresetStatus(payload) {
+  const candidates = [];
+  const add = (path, value) => {
+    const parsed = presetValue(value);
+    if (parsed != null) candidates.push({ path, value: parsed });
+  };
+  add('activeSpeakerPreset', payload?.activeSpeakerPreset);
+  add('speakerPreset', payload?.speakerPreset);
+  add('activePreset', payload?.activePreset);
+  add('status.activeSpeakerPreset', payload?.status?.activeSpeakerPreset);
+  add('status.speakerPreset', payload?.status?.speakerPreset);
+  add('preset.activeSpeakerPreset', payload?.preset?.activeSpeakerPreset);
+
+  const unique = [...new Set(candidates.map(candidate => candidate.value))];
+  return {
+    activeSpeakerPreset: unique.length === 1 ? unique[0] : null,
+    confidence: unique.length === 1 ? 'high' : 'insufficient',
+    evidence: candidates,
+    ...(unique.length > 1 ? { blocker: `Conflicting Speaker Preset evidence: ${unique.join(', ')}` } : {}),
+    ...(unique.length === 0 ? { blocker: 'No recognized active Speaker Preset field was present.' } : {}),
+    raw: payload
+  };
+}
+
 export function parseDenonStatus(payload) {
   const lines = statusLines(payload);
   const state = {
@@ -59,12 +90,15 @@ export class DenonAdapter {
   }
 
   async inspect() {
-    const [probe, status, models, presetStatus] = await Promise.all([
+    const [probe, status, models, presetRaw] = await Promise.all([
       this.evoburrow.call('denon_probe', { host: this.config.host }),
       this.status(),
       this.evoburrow.call('receiver_models', { brand: 'Denon', model: 'X3700H' }).catch(error => ({ unavailable: error.message })),
       this.evoburrow.call('calibration_preset_status', { host: this.config.host, port: this.config.port, ...(this.evoburrow.config.home ? { home: this.evoburrow.config.home } : {}) }).catch(error => ({ unavailable: error.message }))
     ]);
+    const presetStatus = presetRaw?.unavailable
+      ? { activeSpeakerPreset: null, confidence: 'insufficient', blocker: `Preset inspection unavailable: ${presetRaw.unavailable}`, raw: presetRaw }
+      : normalizeSpeakerPresetStatus(presetRaw);
     return { host: this.config.host, probe, status, models, presetStatus };
   }
 
@@ -163,16 +197,22 @@ export class DenonAdapter {
     let last = null;
     do {
       last = await this.status();
-      const text = JSON.stringify(last).toUpperCase();
-      if (/ATMOS/.test(text)) {
-        return { verified: true, status: last, evidence: 'Receiver status contains ATMOS.' };
+      const soundMode = String(last?.state?.soundMode || '').trim();
+      if (/\bATMOS\b/i.test(soundMode)) {
+        return {
+          verified: true,
+          status: last,
+          soundMode,
+          evidence: `Live Denon sound mode reports ${soundMode}.`
+        };
       }
       if (Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, pollMs));
     } while (Date.now() < deadline);
     return {
       verified: false,
       status: last,
-      evidence: `Receiver status did not contain ATMOS within ${timeoutMs} ms.`
+      soundMode: last?.state?.soundMode ?? null,
+      evidence: `Live Denon sound mode did not report Atmos within ${timeoutMs} ms.`
     };
   }
 
