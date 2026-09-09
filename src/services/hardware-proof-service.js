@@ -15,12 +15,13 @@ export class HardwareProofService {
     this.sessions = sessions;
   }
 
-  async inspect({ channel = 'TFL', fileName, stimulusPath } = {}) {
+  async inspect({ channel = 'TFL', fileName, stimulusPath, expectedPreset = 1 } = {}) {
     const blockers = [];
-    const [measurementPreflight, rewContract, shieldFiles] = await Promise.all([
+    const [measurementPreflight, rewContract, shieldFiles, denonInspect] = await Promise.all([
       this.measurement.preflight().catch(error => unavailable(error)),
       this.rew.measurementContract().catch(error => unavailable(error)),
-      fileName ? this.shield.listSweeps(channel).catch(error => unavailable(error)) : Promise.resolve([])
+      fileName ? this.shield.listSweeps(channel).catch(error => unavailable(error)) : Promise.resolve([]),
+      this.denon.inspect().catch(error => unavailable(error))
     ]);
 
     let stimulus = { configured: Boolean(stimulusPath), path: stimulusPath ? resolve(stimulusPath) : null, readable: false };
@@ -44,24 +45,32 @@ export class HardwareProofService {
     if (rewContract.unavailable) blockers.push(`REW measurement contract unavailable: ${rewContract.unavailable}`);
     else if (rewContract.valid === false) blockers.push(...rewContract.blockers);
 
+    const activePreset = denonInspect?.presetStatus?.activeSpeakerPreset ?? null;
+    if (denonInspect.unavailable) blockers.push(`Denon inspection unavailable: ${denonInspect.unavailable}`);
+    else if (activePreset == null) blockers.push('Active Speaker Preset could not be verified. No audio will be emitted until preset state is known.');
+    else if (expectedPreset != null && activePreset !== expectedPreset) blockers.push(`Speaker Preset ${activePreset} is active, expected Speaker Preset ${expectedPreset}.`);
+
     const uniqueBlockers = [...new Set(blockers)];
     return {
       channel,
       fileName: fileName || null,
+      expectedPreset,
+      activePreset,
       stimulus,
       shieldFiles,
       measurementPreflight,
       rewContract,
+      denonInspect,
       ready: uniqueBlockers.length === 0,
       blockers: uniqueBlockers,
       next: uniqueBlockers.length
-        ? 'Resolve the blockers and run the proof again without confirmation.'
+        ? (activePreset != null && activePreset !== expectedPreset ? `Select Speaker Preset ${expectedPreset}, then resume.` : 'Resolve the blockers and run the proof again without confirmation.')
         : 'Hardware path is ready for one audible proof sweep. Re-run with confirmAudible=true.'
     };
   }
 
-  async run({ channel = 'TFL', fileName, stimulusPath, confirmAudible = false } = {}) {
-    const plan = await this.inspect({ channel, fileName, stimulusPath });
+  async run({ channel = 'TFL', fileName, stimulusPath, expectedPreset = 1, confirmAudible = false } = {}) {
+    const plan = await this.inspect({ channel, fileName, stimulusPath, expectedPreset });
     if (!plan.ready) return { executed: false, blocked: true, plan };
     if (!confirmAudible) {
       return {
@@ -73,15 +82,19 @@ export class HardwareProofService {
     }
 
     const microphone = await this.rew.inputLevelCheck({ durationMs: 3000, confirm: true });
+    if (microphone?.usable === false || microphone?.valid === false || microphone?.ready === false) {
+      return { executed: false, blocked: true, plan, microphone, reason: 'REW microphone input proof did not pass. No audio was emitted.' };
+    }
     const session = await this.sessions.create({
       purpose: 'hardware-proof',
       receiver: 'Denon AVR-X3700H',
       channel,
+      expectedPreset,
       fileName,
       stimulusPath: resolve(stimulusPath)
     });
     await this.sessions.writeJson(session.id, 'proof/preflight.json', { ...plan, microphone });
-    await this.sessions.appendEvent(session.id, 'hardware-proof.started', { channel, fileName });
+    await this.sessions.appendEvent(session.id, 'hardware-proof.started', { channel, fileName, expectedPreset });
 
     const measured = await this.measurement.measureChannel({
       sessionId: session.id,
@@ -91,14 +104,18 @@ export class HardwareProofService {
       stimulusPath: resolve(stimulusPath),
       title: `PROOF-${channel}`,
       notes: `dynamic-denon-tuning hardware proof channel=${channel}`,
-      verifyAtmos: true
+      verifyAtmos: true,
+      expectedPreset,
+      measurementType: 'hardware-proof'
     });
 
+    if (measured.wrongPreset) return { executed: false, blocked: true, session, measurement: measured, next: measured.next };
     if (measured.manualRequired) {
       const proof = {
         schemaVersion: 1,
         status: 'manual_measurement_required',
         channel,
+        expectedPreset,
         fileName,
         stimulusPath: resolve(stimulusPath),
         beforeMeasurementKeys: measured.beforeMeasurementKeys,
@@ -113,7 +130,7 @@ export class HardwareProofService {
         session,
         proof,
         measurement: measured,
-        next: 'In REW, start the prepared measurement so it is waiting for file playback. Then call theater_hardware_proof_resume with this sessionId. The server will start the Shield sweep.'
+        next: 'In REW, start the prepared measurement so it is waiting for file playback. Then call theater_hardware_proof_resume with this sessionId. The server will re-check the preset and start the Shield sweep.'
       };
     }
 
@@ -129,8 +146,11 @@ export class HardwareProofService {
       channel: proof.channel,
       beforeMeasurementKeys: proof.beforeMeasurementKeys,
       shieldFile: proof.fileName,
-      verifyAtmos: true
+      verifyAtmos: true,
+      expectedPreset: proof.expectedPreset,
+      measurementType: 'hardware-proof'
     });
+    if (measured.wrongPreset) return { executed: false, blocked: true, sessionId, measurement: measured, next: measured.next };
     return this.finalize(sessionId, measured, proof.microphone);
   }
 
@@ -142,6 +162,7 @@ export class HardwareProofService {
       passed,
       channel: measured.record.channel,
       rewId: measured.record.rewId,
+      attempt: measured.record.attempt,
       microphone,
       atmos: measured.record.atmos,
       quality: measured.record.quality,
