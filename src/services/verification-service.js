@@ -20,9 +20,10 @@ function micInstruction(position) {
 function datasetDefinition(state) {
   return {
     positions: state.positions,
-    channels: state.channels,
-    topology: state.topology,
-    sweepManifestPath: state.sweepManifestPath
+    channels: [...state.channels].map(String),
+    topology: Array.isArray(state.topology) ? [...state.topology].map(String) : state.topology,
+    sweepManifestPath: state.sweepManifestPath,
+    measurementType: 'post-calibration-verification'
   };
 }
 
@@ -75,7 +76,7 @@ export class VerificationService {
         throw new Error(`sweep manifest missing shieldFile/stimulusPath for ${channel}`);
       }
     }
-    const definition = { positions, channels: [...channels], sweepManifestPath: manifest.path, topology: topology ? [...topology] : [...channels] };
+    const definition = { positions, channels: [...channels], sweepManifestPath: manifest.path, topology: topology || [...channels] };
     const baseline = await this.createDataset({ preset: 1, ...definition });
     const candidate = await this.createDataset({ preset: 2, ...definition });
     return {
@@ -112,6 +113,7 @@ export class VerificationService {
 
   async advance({ sessionId, ready = false } = {}) {
     const state = await this.status(sessionId);
+    if (state.status === 'complete') return { state, completed: true, nextAction: state.nextAction };
     const preset = await this.verifyPreset(state);
     if (!preset.ok) return { state, blocked: true, requiresUser: true, ...preset };
     if (!ready && state.status !== 'measuring') {
@@ -196,6 +198,7 @@ export class VerificationService {
       expectedPreset: state.preset,
       measurementType: 'post-calibration-verification'
     });
+    if (measured.wrongPreset) return { state, measured, blocked: true, requiresUser: true, nextAction: measured.next };
     if (!measured.record?.acceptedForOptimization) {
       if (measured.record) state.rejectedAttempts.push({ position: pending.position, channel: pending.channel, rewId: measured.record.rewId, attempt: measured.record.attempt, path: measured.path });
       state.status = 'retry_required';
@@ -233,8 +236,6 @@ export class VerificationService {
       this.sessions.readMeasurementRecords(baselineSessionId, { acceptedOnly: true }),
       this.sessions.readMeasurementRecords(candidateSessionId, { acceptedOnly: true })
     ]);
-    for (const record of baselineRecords) record.preset = 1;
-    for (const record of candidateRecords) record.preset = 2;
     const result = finalizeMeasuredComparison(baselineRecords, candidateRecords, { minimumGain, majorRegression });
     const report = renderVerificationReport({
       receiver: 'Denon AVR-X3700H',
@@ -245,7 +246,7 @@ export class VerificationService {
       result
     });
     const verificationPath = await this.sessions.writeJson(reportSessionId, 'optimized/final-verification.json', {
-      schemaVersion: 1,
+      schemaVersion: 2,
       verifiedAt: new Date().toISOString(),
       baselineSessionId,
       candidateSessionId,
