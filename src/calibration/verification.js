@@ -21,6 +21,16 @@ function topologySignature(records) {
   return [...new Set(records.map(record => String(record.channel).toUpperCase()))].sort();
 }
 
+function settingsSignature(record) {
+  const settings = record?.measurementSettings || {};
+  return {
+    command: settings.command ?? null,
+    playbackMode: settings.playbackMode ?? null,
+    measurementMode: settings.measurementMode ?? null,
+    stimulus: settings.stimulus ?? null
+  };
+}
+
 function evidenceValue(name, evidence) {
   const row = evidence?.[name] || {};
   for (const [key, value] of Object.entries(row)) {
@@ -68,10 +78,10 @@ export function validateMatchedCoverage(baselineRecords, candidateRecords, optio
   const candidate = validateVerificationDataset(candidateRecords, { expectedPreset: options.candidatePreset ?? 2 });
   const missingFromBaseline = [];
   const missingFromCandidate = [];
-  const bKeys = new Set(baseline.accepted.map(identity));
-  const cKeys = new Set(candidate.accepted.map(identity));
-  for (const key of cKeys) if (!bKeys.has(key)) missingFromBaseline.push(key);
-  for (const key of bKeys) if (!cKeys.has(key)) missingFromCandidate.push(key);
+  const bMap = new Map(baseline.accepted.map(record => [identity(record), record]));
+  const cMap = new Map(candidate.accepted.map(record => [identity(record), record]));
+  for (const key of cMap.keys()) if (!bMap.has(key)) missingFromBaseline.push(key);
+  for (const key of bMap.keys()) if (!cMap.has(key)) missingFromCandidate.push(key);
   const topologyMismatch = JSON.stringify(baseline.topology) !== JSON.stringify(candidate.topology);
   const issues = [
     ...baseline.issues.map(issue => ({ side: 'baseline', ...issue })),
@@ -80,6 +90,20 @@ export function validateMatchedCoverage(baselineRecords, candidateRecords, optio
   if (missingFromBaseline.length) issues.push({ type: 'coverage_missing', side: 'baseline', keys: missingFromBaseline });
   if (missingFromCandidate.length) issues.push({ type: 'coverage_missing', side: 'candidate', keys: missingFromCandidate });
   if (topologyMismatch) issues.push({ type: 'topology_mismatch', baseline: baseline.topology, candidate: candidate.topology });
+  for (const [key, before] of bMap) {
+    const after = cMap.get(key);
+    if (!after) continue;
+    const baselineSettings = settingsSignature(before);
+    const candidateSettings = settingsSignature(after);
+    if (JSON.stringify(baselineSettings) !== JSON.stringify(candidateSettings)) {
+      issues.push({
+        type: 'measurement_settings_mismatch',
+        key,
+        baseline: baselineSettings,
+        candidate: candidateSettings
+      });
+    }
+  }
   return {
     valid: baseline.valid && candidate.valid && issues.length === 0,
     baselineCount: baseline.accepted.length,
