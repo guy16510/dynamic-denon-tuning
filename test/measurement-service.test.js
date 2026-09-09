@@ -9,6 +9,12 @@ const SETTINGS = {
   stimulus: '/tmp/TFL.wav'
 };
 
+function frequencyTrace() {
+  const frequency = Array.from({ length: 120 }, (_, index) => 20 * 2 ** (index / 12));
+  const magnitude = frequency.map(() => 75);
+  return { frequency, magnitude, phase: magnitude.map(() => 0) };
+}
+
 function sessionsFixture() {
   let accepted = 0;
   return {
@@ -40,12 +46,11 @@ test('measurement preflight reports independent blockers instead of throwing on 
 
 test('manual capture with a Shield file starts playback before waiting for REW evidence', async () => {
   const order = [];
-  const magnitude = Array.from({ length: 120 }, () => 75);
   const sessions = sessionsFixture();
   const service = new MeasurementService({
     rew: {
       async waitForNewMeasurement() { order.push('rew-wait'); return { id: 'uuid-1', summary: { uuid: 'uuid-1' } }; },
-      async trace(id, kind) { return kind === 'frequency-response' ? { magnitude, phase: magnitude } : { value: [1, 2, 3] }; }
+      async trace(id, kind) { return kind === 'frequency-response' ? frequencyTrace() : { value: [1, 2, 3] }; }
     },
     shield: {
       async playSweep() { order.push('shield-play'); return { started: true }; },
@@ -80,12 +85,11 @@ test('manual capture with a Shield file starts playback before waiting for REW e
 });
 
 test('encoded verification sweep without affirmative Atmos proof is preserved but never accepted', async () => {
-  const magnitude = Array.from({ length: 120 }, () => 75);
   const sessions = sessionsFixture();
   const service = new MeasurementService({
     rew: {
       async waitForNewMeasurement() { return { id: 'uuid-1', summary: { uuid: 'uuid-1' } }; },
-      async trace(id, kind) { return kind === 'frequency-response' ? { magnitude, phase: magnitude } : { value: [1, 2, 3] }; }
+      async trace(id, kind) { return kind === 'frequency-response' ? frequencyTrace() : { value: [1, 2, 3] }; }
     },
     shield: { async playSweep() { return { started: true }; }, async stop() {} },
     denon: {
@@ -114,12 +118,11 @@ test('encoded verification sweep without affirmative Atmos proof is preserved bu
 });
 
 test('encoded verification sweep without persisted REW settings is never accepted', async () => {
-  const magnitude = Array.from({ length: 120 }, () => 75);
   const sessions = sessionsFixture();
   const service = new MeasurementService({
     rew: {
       async waitForNewMeasurement() { return { id: 'uuid-1', summary: { uuid: 'uuid-1' } }; },
-      async trace(id, kind) { return kind === 'frequency-response' ? { magnitude, phase: magnitude } : { value: [1, 2, 3] }; }
+      async trace(id, kind) { return kind === 'frequency-response' ? frequencyTrace() : { value: [1, 2, 3] }; }
     },
     shield: { async playSweep() { return { started: true }; }, async stop() {} },
     denon: {
