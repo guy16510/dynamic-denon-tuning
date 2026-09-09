@@ -51,9 +51,18 @@ function traceData(trace) {
 
 function frequencyResponseData(record) {
   const data = traceData(record?.traces?.frequencyResponse);
+  const frequency = Array.isArray(data.frequency) ? data.frequency : [];
+  const magnitude = Array.isArray(data.magnitude) ? data.magnitude : [];
+  if (frequency.length !== magnitude.length) return { frequency: [], magnitude: [] };
+  const pairs = [];
+  for (let index = 0; index < frequency.length; index += 1) {
+    const hz = Number(frequency[index]);
+    const db = Number(magnitude[index]);
+    if (Number.isFinite(hz) && Number.isFinite(db)) pairs.push([hz, db]);
+  }
   return {
-    frequency: finite(Array.isArray(data.frequency) ? data.frequency.map(Number) : []),
-    magnitude: finite(Array.isArray(data.magnitude) ? data.magnitude.map(Number) : [])
+    frequency: pairs.map(pair => pair[0]),
+    magnitude: pairs.map(pair => pair[1])
   };
 }
 
@@ -162,7 +171,7 @@ function distortionThd(record) {
 export function deriveCalibrationMetrics(records, { minimumAcceptedRecords = 3 } = {}) {
   const accepted = (records || []).filter(record => (
     record
-    && record.acceptedForOptimization !== false
+    && record.acceptedForOptimization === true
     && record.traces?.frequencyResponse
   ));
   const speakers = accepted.filter(record => !isSubwoofer(record.channel));
@@ -342,7 +351,7 @@ export function deriveCalibrationMetrics(records, { minimumAcceptedRecords = 3 }
   }
 
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     recordCount: (records || []).length,
     acceptedRecordCount: accepted.length,
     metrics,
