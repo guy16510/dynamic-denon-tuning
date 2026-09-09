@@ -61,6 +61,39 @@ test('new measurements use stable REW UUIDs when available', async () => {
   assert.equal(captured.id, 'new-uuid');
 });
 
+test('manual REW mode returns a resumable checkpoint without sending a measurement command', async () => {
+  const adapter = new RewAdapter({ url: 'http://127.0.0.1:4735', measurementMode: 'manual' }, {});
+  let commandPosted = false;
+  adapter.listMeasurements = async () => [{ uuid: 'existing' }];
+  adapter.request = async (path, options = {}) => {
+    if (path === '/measure/naming') return {};
+    if (path === '/measure/command' && options.method === 'POST') commandPosted = true;
+    return 'OK';
+  };
+  const started = await adapter.startMeasurement({ title: 'TFL0', notes: 'manual proof' });
+  assert.equal(started.manualRequired, true);
+  assert.equal(started.started, false);
+  assert.deepEqual(started.beforeMeasurementKeys, ['existing']);
+  assert.equal(commandPosted, false);
+});
+
+test('REW Pro flow posts the negotiated SPL command automatically', async () => {
+  const adapter = new RewAdapter({ url: 'http://127.0.0.1:4735', measurementMode: 'pro' }, {});
+  const posts = [];
+  adapter.listMeasurements = async () => [{ uuid: 'existing' }];
+  adapter.measurementContract = async () => ({ valid: true, selected: { command: 'SPL', playbackMode: 'From file', measurementMode: 'Single' } });
+  adapter.request = async (path, options = {}) => {
+    if (path === '/measure/naming') return {};
+    if (options.method === 'POST') posts.push([path, options.body]);
+    return 'OK';
+  };
+  const started = await adapter.startMeasurement({ title: 'TFL0', notes: 'pro proof' });
+  assert.equal(started.started, true);
+  assert.equal(started.manualRequired, false);
+  assert.equal(started.command, 'SPL');
+  assert.ok(posts.some(([path, body]) => path === '/measure/command' && body?.command === 'SPL'));
+});
+
 test('REW float arrays decode from big-endian Base64', () => {
   const decoded = decodeFloat32Base64(float32Base64([1.25, -2.5, 72.125]));
   assert.deepEqual(decoded.map(value => Math.round(value * 1000) / 1000), [1.25, -2.5, 72.125]);
