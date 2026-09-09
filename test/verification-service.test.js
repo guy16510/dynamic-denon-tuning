@@ -10,7 +10,11 @@ async function fixture(activePreset = 2) {
   const root = await mkdtemp(join(tmpdir(), 'denon-verify-'));
   const sessions = new SessionStore(join(root, 'sessions'));
   const manifest = join(root, 'sweeps.json');
-  await writeFile(manifest, JSON.stringify({ channels: { TFL: { shieldFile: 'TFL.wav', stimulusPath: '/tmp/TFL.wav' } } }));
+  await writeFile(manifest, JSON.stringify({ channels: {
+    TFL: { shieldFile: 'TFL.wav', stimulusPath: '/tmp/TFL.wav' },
+    TFR: { shieldFile: 'TFR.wav', stimulusPath: '/tmp/TFR.wav' },
+    BOGUS: { shieldFile: 'BOGUS.wav', stimulusPath: '/tmp/BOGUS.wav' }
+  } }));
   let measured = 0;
   const service = new VerificationService({
     denon: { async inspect() { return { presetStatus: { activeSpeakerPreset: activePreset } }; } },
@@ -40,6 +44,24 @@ test('wrong active preset blocks verification before measurement audio', async t
   assert.equal(result.requiresUser, true);
   assert.match(result.nextAction, /Select Speaker Preset 1/);
   assert.equal(f.measured(), 0);
+});
+
+test('standalone verification rejects an unknown explicit channel token', async t => {
+  const f = await fixture(1);
+  t.after(() => rm(f.root, { recursive: true, force: true }));
+  await assert.rejects(
+    () => f.service.start({ positions: 1, channels: ['BOGUS'], sweepManifestPath: f.manifest }),
+    /Unknown channel tokens/
+  );
+});
+
+test('standalone verification rejects topology that differs from measured channels', async t => {
+  const f = await fixture(1);
+  t.after(() => rm(f.root, { recursive: true, force: true }));
+  await assert.rejects(
+    () => f.service.start({ positions: 1, channels: ['TFL'], topology: ['TFR'], sweepManifestPath: f.manifest }),
+    /topology must exactly match the channels being measured/
+  );
 });
 
 test('finalization rejects mismatched verification definitions before reading acoustic records', async t => {
