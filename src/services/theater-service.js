@@ -1,4 +1,4 @@
-import { readFile, access, writeFile } from 'node:fs/promises';
+import { readFile, access, writeFile, stat } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { resolve } from 'node:path';
 import { scoreCalibration } from '../calibration/score.js';
@@ -69,6 +69,48 @@ export class TheaterService {
     return { snapshot, path };
   }
 
+  async archiveMeasurements(sessionId, workflow) {
+    const rewMdat = this.sessions.path(sessionId, 'rew/theater.mdat');
+    try {
+      const existing = await stat(rewMdat);
+      if (existing.isFile() && existing.size > 0) {
+        workflow.rewMdat = rewMdat;
+        return { saved: true, verified: true, path: rewMdat, size: existing.size, recoveredExisting: true };
+      }
+      throw new Error('existing REW archive is not a non-empty regular file');
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    const saved = await this.rew.saveAll(rewMdat, `Raw pre-Nexus measurements for ${sessionId}`);
+    if (!saved?.verified || !saved?.path) throw new Error('REW archive save did not return verified evidence');
+    workflow.rewMdat = saved.path;
+    return saved;
+  }
+
+  async completeMeasurementPhase(sessionId, workflow) {
+    try {
+      const archive = await this.archiveMeasurements(sessionId, workflow);
+      workflow.status = 'measurements_complete';
+      workflow.phase = 'nexus_prepare';
+      workflow.blockers = (workflow.blockers || []).filter(value => !/^REW MDAT archive failed:/.test(value));
+      await this.saveWorkflow(sessionId, workflow, 'measurements.complete', {
+        count: workflow.completedMeasurements.length,
+        rewMdat: workflow.rewMdat,
+        archiveBytes: archive.size ?? null,
+        recoveredExisting: archive.recoveredExisting ?? false
+      });
+      return { complete: true, archive };
+    } catch (error) {
+      workflow.status = 'measurement_archive_failed';
+      workflow.phase = 'rew_archive';
+      workflow.nextAction = 'REW measurements are complete, but the raw .mdat archive is not verified. Resolve REW save access/state and resume; Nexus will not start without the archive.';
+      const blocker = `REW MDAT archive failed: ${error.message}`;
+      workflow.blockers = [...new Set([...(workflow.blockers || []).filter(value => !/^REW MDAT archive failed:/.test(value)), blocker])];
+      await this.saveWorkflow(sessionId, workflow, 'measurements.archive-failed', { error: error.message });
+      return { complete: false, error };
+    }
+  }
+
   async startAutotune({ positions = 3, channels = null, baselineAdy = null, sweepManifestPath = null } = {}) {
     if (!Number.isInteger(positions) || positions < 1 || positions > 7) throw new Error('positions must be an integer from 1 to 7');
     const manifest = await loadManifest(sweepManifestPath);
@@ -95,7 +137,7 @@ export class TheaterService {
 
     const activePreset = inspect.denon?.presetStatus?.activeSpeakerPreset ?? null;
     const workflow = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       sessionId: session.id,
       status: 'awaiting_position',
       phase: 'baseline_complete',
@@ -151,6 +193,11 @@ export class TheaterService {
       workflow.nextAction = `Keep the microphone at position ${workflow.currentPosition}. Retry ${workflow.channels[workflow.currentChannelIndex]}; prior failed evidence is preserved.`;
       delete workflow.pendingRetry;
       await this.saveWorkflow(sessionId, workflow, 'measurement.retry-ready', { position: workflow.currentPosition, channel: workflow.channels[workflow.currentChannelIndex] });
+    }
+
+    if (workflow.status === 'measurement_archive_failed') {
+      const archived = await this.completeMeasurementPhase(sessionId, workflow);
+      if (!archived.complete) return { workflow, blocked: true, retryRequired: true, reason: archived.error.message, instruction: workflow.nextAction };
     }
 
     if (workflow.status === 'awaiting_position') {
@@ -226,44 +273,44 @@ export class TheaterService {
         return { workflow, requiresUser: true, instruction: workflow.nextAction };
       }
 
-      const rewMdat = this.sessions.path(sessionId, 'rew/theater.mdat');
-      try {
-        const saved = await this.rew.saveAll(rewMdat, `Raw pre-Nexus measurements for ${sessionId}`);
-        workflow.rewMdat = saved.path;
-      } catch (error) {
-        workflow.blockers.push(`REW MDAT save failed: ${error.message}`);
-      }
-      workflow.status = 'measurements_complete';
-      workflow.phase = 'nexus_prepare';
-      await this.saveWorkflow(sessionId, workflow, 'measurements.complete', { count: workflow.completedMeasurements.length, rewMdat: workflow.rewMdat || null });
+      const archived = await this.completeMeasurementPhase(sessionId, workflow);
+      if (!archived.complete) return { workflow, blocked: true, retryRequired: true, reason: archived.error.message, instruction: workflow.nextAction };
     }
 
     if (workflow.status === 'measurements_complete') {
       if (!workflow.baselineAdy) return { workflow, blocked: true, reason: 'baseline .ady missing' };
+      if (!workflow.rewMdat) return { workflow, blocked: true, reason: 'verified REW .mdat archive missing' };
+      const archive = await stat(workflow.rewMdat).catch(() => null);
+      if (!archive?.isFile() || archive.size <= 0) return { workflow, blocked: true, reason: 'verified REW .mdat archive is no longer a non-empty file' };
       const sessionRoot = this.sessions.path(sessionId, '.');
       const prepared = await this.nexus.prepare({
         sessionRoot,
         baselineAdy: workflow.baselineAdy,
         measurements: workflow.completedMeasurements,
-        rewMdat: workflow.rewMdat || null
+        rewMdat: workflow.rewMdat
       });
       const optimized = await this.nexus.optimize({ manifestPath: prepared.manifestPath });
-      workflow.status = optimized.interactiveRequired ? 'awaiting_nexus' : 'nexus_running_complete';
+      workflow.status = 'awaiting_nexus';
+      workflow.phase = 'nexus_output';
       workflow.nexus = { prepared, optimized };
-      await this.saveWorkflow(sessionId, workflow, 'nexus.prepared', { interactiveRequired: optimized.interactiveRequired });
-      return { workflow, nexus: workflow.nexus, requiresUser: optimized.interactiveRequired };
+      workflow.nextAction = optimized.interactiveRequired
+        ? 'Complete A1 Evo Nexus optimization and provide the generated optimized.ady path.'
+        : 'The configured Nexus command completed. Provide its generated optimized.ady path so V1 can validate and preserve the artifact before MultEQ transfer.';
+      await this.saveWorkflow(sessionId, workflow, 'nexus.prepared', { interactiveRequired: optimized.interactiveRequired, automatedCommandCompleted: optimized.automated === true });
+      return { workflow, nexus: workflow.nexus, requiresUser: true, instruction: workflow.nextAction };
     }
 
     if (workflow.status === 'awaiting_nexus') {
       if (!nexusComplete || !optimizedAdy) {
-        return { workflow, requiresUser: true, instruction: 'Complete A1 Evo Nexus optimization and provide the generated optimized.ady path.' };
+        return { workflow, requiresUser: true, instruction: workflow.nextAction || 'Complete A1 Evo Nexus optimization and provide the generated optimized.ady path.' };
       }
       const valid = await this.nexus.validateOptimized(optimizedAdy);
       const copied = await this.sessions.copyArtifact(sessionId, valid.path, 'nexus/optimized.ady');
       workflow.optimizedAdy = copied;
+      workflow.optimizedAdyValidation = valid;
       workflow.status = 'awaiting_upload';
       workflow.phase = 'xt32_transfer';
-      await this.saveWorkflow(sessionId, workflow, 'nexus.complete', { optimizedAdy: copied });
+      await this.saveWorkflow(sessionId, workflow, 'nexus.complete', { optimizedAdy: copied, validation: valid });
       return {
         workflow,
         requiresUser: true,
@@ -322,15 +369,8 @@ export class TheaterService {
         workflow.status = 'awaiting_position';
         workflow.nextAction = nextMicInstruction(workflow.currentPosition);
       } else {
-        const rewMdat = this.sessions.path(sessionId, 'rew/theater.mdat');
-        try {
-          const saved = await this.rew.saveAll(rewMdat, `Raw pre-Nexus measurements for ${sessionId}`);
-          workflow.rewMdat = saved.path;
-        } catch (error) {
-          workflow.blockers.push(`REW MDAT save failed: ${error.message}`);
-        }
-        workflow.status = 'measurements_complete';
-        workflow.phase = 'nexus_prepare';
+        const archived = await this.completeMeasurementPhase(sessionId, workflow);
+        if (!archived.complete) return { workflow, captured, blocked: true, retryRequired: true, reason: archived.error.message, instruction: workflow.nextAction };
       }
     }
 
