@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "description": "Map each configured theater channel to the encoded Atmos file on Shield and the matching REW file-playback stimulus on the Mac. Do not commit licensed/proprietary sweep media here.",
+  "channels": {
+    "FL": { "shieldFile": "FL.m4a", "stimulusPath": "/absolute/path/on/mac/FL.wav" },
+    "FR": { "shieldFile": "FR.m4a", "stimulusPath": "/absolute/path/on/mac/FR.wav" },
+    "C": { "shieldFile": "C.m4a", "stimulusPath": "/absolute/path/on/mac/C.wav" },
+    "SL": { "shieldFile": "SL.m4a", "stimulusPath": "/absolute/path/on/mac/SL.wav" },
+    "SR": { "shieldFile": "SR.m4a", "stimulusPath": "/absolute/path/on/mac/SR.wav" },
+    "SBL": { "shieldFile": "SBL.m4a", "stimulusPath": "/absolute/path/on/mac/SBL.wav" },
+    "SBR": { "shieldFile": "SBR.m4a", "stimulusPath": "/absolute/path/on/mac/SBR.wav" },
+    "TFL": { "shieldFile": "TFL.m4a", "stimulusPath": "/absolute/path/on/mac/TFL.wav" },
+    "TFR": { "shieldFile": "TFR.m4a", "stimulusPath": "/absolute/path/on/mac/TFR.wav" },
+    "TRL": { "shieldFile": "TRL.m4a", "stimulusPath": "/absolute/path/on/mac/TRL.wav" },
+    "TRR": { "shieldFile": "TRR.m4a", "stimulusPath": "/absolute/path/on/mac/TRR.wav" },
+    "SW1": { "shieldFile": "SW1.m4a", "stimulusPath": "/absolute/path/on/mac/SW1.wav" }
+  }
+}

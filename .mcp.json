@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "denon-atmos-autotune": {
+      "command": "node",
+      "args": ["src/index.js"]
+    }
+  }
+}

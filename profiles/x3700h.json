@@ -1,0 +1,22 @@
+{
+  "manufacturer": "Denon",
+  "model": "AVR-X3700H",
+  "defaultHost": "192.168.2.8",
+  "speakerPresets": 2,
+  "protectedPreset": 1,
+  "optimizedPreset": 2,
+  "protectedPhysicalSettings": [
+    "ampAssign",
+    "speakerExistence",
+    "heightSpeakerType",
+    "subwooferCount",
+    "terminalAssignments",
+    "biAmp",
+    "preOutConfiguration",
+    "hdmiAssignments",
+    "triggerOutputs",
+    "zone2Routing",
+    "speakerImpedance"
+  ],
+  "expectedChannels": ["FL", "FR", "C", "SL", "SR", "SBL", "SBR", "TFL", "TFR", "TRL", "TRR", "SW1", "SW2"]
+}
