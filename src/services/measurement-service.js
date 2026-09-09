@@ -26,6 +26,25 @@ export class MeasurementService {
     this.sessions = sessions;
   }
 
+  async verifyAudibleContext(expectedPreset = null) {
+    let activePreset = null;
+    if (expectedPreset != null) {
+      const inspected = await this.denon.inspect();
+      activePreset = inspected?.presetStatus?.activeSpeakerPreset ?? null;
+      if (activePreset !== expectedPreset) {
+        return {
+          ok: false,
+          wrongPreset: true,
+          expectedPreset,
+          activePreset,
+          next: `Select Speaker Preset ${expectedPreset}, then resume.`
+        };
+      }
+    }
+    const safety = await this.denon.requireSafeAudibleTest({ expectedInput: this.denon.config.shieldInput });
+    return { ok: true, expectedPreset, activePreset, safety };
+  }
+
   async preflight() {
     const [rew, shield, denon, autoMeasure] = await Promise.all([
       this.rew.status().catch(error => unavailable(error)),
@@ -64,7 +83,7 @@ export class MeasurementService {
       rewId: String(captured.id)
     });
     const record = {
-      schemaVersion: 6,
+      schemaVersion: 7,
       capturedAt: new Date().toISOString(),
       position,
       channel,
@@ -118,21 +137,10 @@ export class MeasurementService {
   }
 
   async measureChannel({ sessionId, position, channel, shieldFile, stimulusPath, title, notes, verifyAtmos = true, expectedPreset = null, measurementType = 'verification' }) {
-    if (expectedPreset != null) {
-      const inspected = await this.denon.inspect();
-      const active = inspected?.presetStatus?.activeSpeakerPreset ?? null;
-      if (active !== expectedPreset) {
-        return {
-          completed: false,
-          blocked: true,
-          wrongPreset: true,
-          expectedPreset,
-          activePreset: active,
-          next: `Select Speaker Preset ${expectedPreset}, then resume.`
-        };
-      }
+    const initialContext = await this.verifyAudibleContext(expectedPreset);
+    if (!initialContext.ok) {
+      return { completed: false, blocked: true, ...initialContext };
     }
-    await this.denon.requireSafeAudibleTest({ expectedInput: this.denon.config.shieldInput });
 
     const configuration = await this.rew.configureFilePlayback({ stimulusPath });
     const settings = measurementSettings(configuration, stimulusPath);
@@ -175,6 +183,24 @@ export class MeasurementService {
       reason: 'REW file playback captures its noise floor and then waits for the external acoustic timing reference before the Shield sweep starts.'
     };
 
+    const finalContext = await this.verifyAudibleContext(expectedPreset);
+    if (!finalContext.ok) {
+      await this.sessions.appendEvent(sessionId, 'measurement.pre-play-context-changed', {
+        position,
+        channel,
+        expectedPreset,
+        activePreset: finalContext.activePreset,
+        rewMeasurementMayBeArmed: true
+      });
+      return {
+        completed: false,
+        blocked: true,
+        ...finalContext,
+        rewMeasurementMayBeArmed: true,
+        manualAction: 'Cancel the pending measurement in REW before retrying. No Shield audio was emitted.'
+      };
+    }
+
     let playback;
     try {
       playback = await this.shield.playSweep(channel, shieldFile);
@@ -188,21 +214,8 @@ export class MeasurementService {
   }
 
   async captureManual({ sessionId, position, channel, beforeMeasurementKeys, shieldFile = null, verifyAtmos = true, expectedPreset = null, measurementType = 'verification', measurementSettings: settings = null }) {
-    if (expectedPreset != null) {
-      const inspected = await this.denon.inspect();
-      const active = inspected?.presetStatus?.activeSpeakerPreset ?? null;
-      if (active !== expectedPreset) {
-        return {
-          completed: false,
-          blocked: true,
-          wrongPreset: true,
-          expectedPreset,
-          activePreset: active,
-          next: `Select Speaker Preset ${expectedPreset}, then resume.`
-        };
-      }
-    }
-    await this.denon.requireSafeAudibleTest({ expectedInput: this.denon.config.shieldInput });
+    const context = await this.verifyAudibleContext(expectedPreset);
+    if (!context.ok) return { completed: false, blocked: true, ...context };
     let playback = null;
     try {
       let captured;
