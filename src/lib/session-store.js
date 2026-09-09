@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile, access, copyFile, readdir } from 'node:fs/promises';
 import { constants } from 'node:fs';
-import { join, resolve, relative, isAbsolute, basename } from 'node:path';
+import { join, resolve, relative, isAbsolute } from 'node:path';
 
 function idNow() {
   return new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').replace(/\.\d{3}Z$/, 'Z');
@@ -84,7 +84,7 @@ export class SessionStore {
       attempt: record.attempt,
       recordPath
     };
-    await this.writeJson(sessionId, pointerPath, pointer, { overwrite: true });
+    await this.writeJson(sessionId, pointerPath, pointer);
     return { pointerPath, pointer };
   }
 
@@ -92,6 +92,9 @@ export class SessionStore {
     const pointerPath = `measurements/position-${position}/${safeId(channel)}/accepted.json`;
     const pointer = await this.readJson(sessionId, pointerPath);
     const record = await this.readJson(sessionId, pointer.recordPath);
+    if (record.position !== pointer.position || String(record.channel).toUpperCase() !== String(pointer.channel).toUpperCase() || record.rewId !== pointer.rewId || record.attempt !== pointer.attempt) {
+      throw new Error(`accepted measurement pointer does not match immutable record: ${pointerPath}`);
+    }
     return { pointerPath, pointer, record };
   }
 
@@ -112,7 +115,11 @@ export class SessionStore {
         if (acceptedOnly) {
           try {
             const pointer = JSON.parse(await readFile(join(channelDir, 'accepted.json'), 'utf8'));
-            records.push(JSON.parse(await readFile(this.path(sessionId, pointer.recordPath), 'utf8')));
+            const record = JSON.parse(await readFile(this.path(sessionId, pointer.recordPath), 'utf8'));
+            if (record.position !== pointer.position || String(record.channel).toUpperCase() !== String(pointer.channel).toUpperCase() || record.rewId !== pointer.rewId || record.attempt !== pointer.attempt) {
+              throw new Error(`accepted measurement pointer does not match immutable record: ${relative(this.path(sessionId, '.'), join(channelDir, 'accepted.json'))}`);
+            }
+            records.push(record);
           } catch (error) {
             if (error.code !== 'ENOENT') throw error;
           }
