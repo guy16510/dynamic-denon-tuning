@@ -32,6 +32,10 @@ export function loadConfig() {
   if (!['auto', 'pro', 'manual'].includes(rewMode)) {
     throw new Error('REW_MEASUREMENT_MODE must be auto, pro, or manual');
   }
+  const filePlaybackArmDelayMs = numberEnv('REW_FILE_PLAYBACK_ARM_DELAY_MS', 4000);
+  if (!Number.isInteger(filePlaybackArmDelayMs) || filePlaybackArmDelayMs < 1000 || filePlaybackArmDelayMs > 15000) {
+    throw new Error('REW_FILE_PLAYBACK_ARM_DELAY_MS must be an integer between 1000 and 15000 ms');
+  }
 
   return Object.freeze({
     denon: {
@@ -53,7 +57,8 @@ export function loadConfig() {
     },
     rew: {
       url: process.env.REW_URL || 'http://127.0.0.1:4735',
-      measurementMode: rewMode
+      measurementMode: rewMode,
+      filePlaybackArmDelayMs
     },
     nexus: {
       workspace: process.env.NEXUS_WORKSPACE || null,
