@@ -1,138 +1,88 @@
 # Dynamic Denon Tuning
 
-Local, Codex-controlled whole-theater calibration orchestration for a Denon AVR-X3700H, REW, an NVIDIA Shield, A1 Evo Nexus, and the Audyssey ACM1HB microphone.
-
-The governing rule is:
+Local, Codex-controlled whole-theater calibration orchestration for a Denon AVR-X3700H, REW, an NVIDIA Shield, A1 Evo Nexus, MultEQ Editor, and the Audyssey ACM1HB microphone.
 
 > **No acoustic change is considered an improvement until it has been re-measured.**
 
-This repository does not implement a replacement room-correction DSP, FIR engine, Atmos encoder, or Audyssey optimizer. It orchestrates existing tools, preserves evidence, applies safety gates, and rejects unverified changes.
+This project orchestrates existing tools. It does not reimplement REW DSP, Atmos encoding, Audyssey/XT32, A1 Evo Nexus, or a generic Denon protocol console.
 
-## Current status
+## V1 status
 
-V1 core is implemented as a resumable Node.js MCP server.
+### Implemented and CI-tested
 
-Implemented:
+- EvoBurrow integration for guarded Denon inspection and allowlisted state changes
+- live power, input, MPLAY token, master-volume, mute, and Atmos verification
+- REW 5.40 API negotiation, UUID measurement identifiers, Base64 float trace decoding, distortion capture, REW Pro automation, and manual REW fallback
+- Shield ADB connectivity, allowlisted encoded sweep lookup, playback, and stop
+- immutable measurement attempts such as `attempt-001-<rew-uuid>.json`
+- deterministic accepted-attempt pointers, failed/rejected evidence is retained
+- resumable pre-Nexus multi-position measurement
+- read-only topology normalization, or explicit user-provided channels when detection is uncertain
+- A1 Evo Nexus handoff and optimized `.ady` validation
+- separate, resumable Speaker Preset 1 and Speaker Preset 2 verification datasets
+- preset verification before every verification sweep, wrong preset blocks audio
+- matched-coverage validation across position, channel, measurement type, topology, manifest, and dataset definition
+- automatic extraction of all seven weighted metrics from REW evidence
+- aggregate scoring, major-regression rejection, rollback recommendation, and human-readable Markdown report
+- fail-closed distance, trim, crossover, and preset writes when EvoBurrow lacks a safe allowlisted capability
 
-- EvoBurrow MCP child-server integration
-- read-only Denon inspection and snapshots
-- baseline-bound safe Denon input/volume/mute changes through EvoBurrow
-- Speaker Preset status inspection
-- REW readiness and microphone-level checks
-- REW Measure From File configuration
-- REW automated measurement start when REW Pro permits it
-- manual REW fallback when API-triggered sweeps are unavailable
-- NVIDIA Shield control through ADB
-- deterministic per-channel Atmos sweep playback
-- Atmos decoder verification through the AVR
-- multi-position, resumable measurement workflow
-- append-only measurement/session artifacts
-- raw REW `.mdat` session archive
-- Nexus handoff instead of reimplementing A1 optimization
-- MultEQ Editor manual transfer checkpoint for V1
-- transparent calibration scoring
-- regression rejection
-- immutable verification result and Markdown report
-- fail-closed placeholders for unsupported Denon distance, trim, and crossover writes
+### Implemented but hardware-unverified
 
-Not yet implemented:
+- the complete Shield -> Denon -> room -> ACM1HB -> Mac -> REW measurement path
+- exact REW 5.40 Measure From File behavior on the target Mac
+- Denon AVR-X3700H topology/preset inspection against the real receiver
+- encoded Atmos routing for every configured speaker
+- full Nexus -> MultEQ -> Preset 2 -> measured verification loop
 
-- automated MultEQ Editor transfer
-- safe allowlisted Denon distance/trim/crossover mutation through EvoBurrow
-- fully automatic extraction of measured score components from all REW traces
-- automated search over crossover/delay/trim candidates
-- Android UIAutomator transfer flow
+### Intentionally manual in V1
 
-## Important corrections to the original design
+- move the microphone between requested positions
+- start the prepared REW measurement when REW Pro automation is unavailable
+- complete A1 Evo Nexus when no supported automation mechanism is configured
+- transfer the optimized `.ady` through MultEQ Editor
+- select Speaker Preset 1 or 2 when EvoBurrow does not expose a safe allowlisted preset-selection operation
 
-### REW Pro is required for fully automatic sweeps
+### Blocked by missing safe EvoBurrow capability
 
-REW's API can be used for general control without Pro, but REW documents that **automated sweep measurements through the API require a Pro upgrade license**.
+The project will not bypass EvoBurrow by exposing arbitrary Denon protocol strings. Speaker distance, trim, crossover, and Speaker Preset writes remain blocked unless EvoBurrow exposes explicit, allowlisted, baseline-bound operations with readback/rollback protection.
 
-The server therefore supports three modes:
+### Future V2
 
-```text
-REW_MEASUREMENT_MODE=auto
-REW_MEASUREMENT_MODE=pro
-REW_MEASUREMENT_MODE=manual
-```
-
-`auto` tries the API and falls back to a human-started measurement when REW reports that Pro is required.
-
-For the target experience where Codex starts every sweep with no REW interaction, plan on REW Pro in addition to the MultEQ Editor app.
-
-### Denon speaker writes intentionally fail closed
-
-The current EvoBurrow protected mutation surface allows baseline-bound changes such as input, volume, mute, and power. It does not currently expose safe arbitrary writes for speaker distance, channel trim, or crossover.
-
-This project does **not** bypass that safety boundary by exposing raw Denon protocol strings.
-
-Until EvoBurrow adds verified, allowlisted, rollback-capable implementations, these MCP tools deliberately return a capability error:
-
-```text
-theater_set_distance
-theater_set_level
-theater_set_crossover
-```
-
-That is a feature, not unfinished error handling.
+- supported Nexus automation where licensing and tooling permit it
+- Android ADB/UIAutomator automation for MultEQ Editor
+- safe programmatic Speaker Preset selection
+- closed-loop candidate search for distance/trim/crossover, only after safe bounded receiver mutations exist
+- fully unattended operation once every human checkpoint has a supported safe automation path
 
 ## Architecture
 
 ```text
-                         Codex
-                           |
-                           | MCP
-                           v
-               denon-atmos-autotune
-                    Node.js MCP
-                           |
-          +----------------+----------------+
-          |                |                |
-          v                v                v
-      EvoBurrow           REW          NVIDIA Shield
-          |                |                |
-          v                |                | Atmos files
-     AVR-X3700H <----------+----------------+
-          |                                 |
-          +------------- Room --------------+
-                           |
-                     ACM1HB -> Mac
-
-                        A1 Evo Nexus
-                             |
-                       optimized.ady
-                             |
-                      MultEQ Editor
-                             |
-                       Speaker Preset 2
+Codex
+  -> dynamic-denon-tuning MCP
+      -> EvoBurrow -> Denon AVR-X3700H
+      -> REW 5.40 -> ACM1HB on the Mac
+      -> NVIDIA Shield via ADB -> encoded Atmos sweeps over HDMI
+      -> A1 Evo Nexus -> optimized .ady
+      -> MultEQ Editor -> Speaker Preset 2
 ```
 
-## Hardware path
-
-```text
-Shield -> HDMI -> Denon -> selected speaker -> room -> ACM1HB -> Mac -> REW
-```
-
-For normal REW/Nexus measurement, the ACM1HB must feed the Mac through a compatible electret microphone input or USB adapter. Do not feed 48 V phantom power into the ACM1HB.
-
-The mic returns to the Denon Setup Mic jack only for the initial Audyssey/MultEQ Editor seed calibration when a baseline `.ady` does not already exist.
+Speaker Preset 1 is the protected baseline. Speaker Preset 2 is the candidate. No acceptance decision is made from calculated settings alone.
 
 ## Requirements
 
 - macOS measurement computer
-- Node.js 22
+- Node.js 22+
 - Denon AVR-X3700H reachable on the LAN
 - NVIDIA Shield reachable through ADB
 - REW 5.40+ with local API enabled at `127.0.0.1:4735`
-- REW Pro for API-triggered fully automatic sweep measurement
-- A1 Evo Nexus / A1 Evo AcoustiX workspace
+- REW Pro for API-triggered automatic sweep starts, manual fallback is supported without it
 - EvoBurrow MCP
-- Audyssey MultEQ Editor app for XT32 `.ady` transfer in V1
-- ACM1HB microphone and compatible Mac electret input
+- A1 Evo Nexus / compatible local workspace
+- MultEQ Editor for V1 `.ady` transfer
+- ACM1HB microphone and a compatible Mac electret input/adapter
 - encoded Atmos sweep files supplied by the A1 workflow
 
-Do not commit proprietary or licensed sweep media to this repository.
+Do not feed 48 V phantom power into the ACM1HB. Do not commit licensed sweep media.
 
 ## Install
 
@@ -141,10 +91,11 @@ npm install
 cp .env.example .env
 ```
 
-Edit `.env` for your Mac:
+Typical target configuration:
 
 ```text
 DENON_HOST=192.168.2.8
+DENON_SHIELD_INPUT=MPLAY
 EVOBURROW_SERVER=/absolute/path/to/evoburrow-mcp/dist/server.mjs
 A1_EVO_HOME=/absolute/path/to/a1-workspace
 SHIELD_HOST=<shield-ip>
@@ -152,22 +103,11 @@ REW_MEASUREMENT_MODE=auto
 ALLOW_RECEIVER_WRITES=0
 ```
 
-Keep `ALLOW_RECEIVER_WRITES=0` until read-only inspection and hardware validation are complete.
+Keep receiver writes disabled until read-only inspection and the first hardware proof pass.
 
 ## Sweep manifest
 
-Copy the example:
-
-```bash
-cp profiles/sweeps.example.json profiles/sweeps.local.json
-```
-
-For every configured channel, map:
-
-- `shieldFile`, encoded sweep filename on the Shield
-- `stimulusPath`, corresponding local stimulus file REW should use for Measure From File
-
-Example:
+Create a local manifest from `profiles/sweeps.example.json`. Every selected channel needs both the encoded Shield file and corresponding local REW stimulus:
 
 ```json
 {
@@ -180,194 +120,103 @@ Example:
 }
 ```
 
-Local manifests and media paths should not be committed if they contain private machine paths or licensed media.
+The verification runner reuses the exact same manifest for both presets.
 
-## MCP configuration
-
-The repository includes `.mcp.json`. Once dependencies are installed, the server entry point is:
-
-```text
-node src/index.js
-```
-
-Core tools include:
+## Important MCP operations
 
 ```text
 theater_inspect
-theater_snapshot
+theater_detect_topology
+theater_hardware_proof
+theater_hardware_proof_resume
+
 theater_autotune_start
 theater_autotune_status
 theater_autotune_advance
 theater_autotune_resume_manual
-theater_autotune_finalize_verification
+
+theater_verification_start
+theater_verification_advance
+theater_verification_resume_manual
+theater_verification_finalize
 
 measurement_preflight
 measurement_measure_channel
 measurement_capture_new
 
-shield_status
-shield_list_sweeps
-shield_play_sweep
-shield_stop
-shield_verify_atmos
-
 rew_status
+rew_measurement_contract
 rew_input_level_check
 
-calibration_score
-calibration_compare_scores
-calibration_crossover_candidates
-calibration_delay_candidate
-```
-
-## V1 workflow
-
-### 1. Hardware proof
-
-Verify the ACM1HB is visible to macOS and REW, then run:
-
-```text
-measurement_preflight
-rew_input_level_check
-```
-
-Do not proceed until the input is real, unclipped, and stable.
-
-### 2. Shield proof
-
-```text
 shield_status
 shield_list_sweeps
-shield_play_sweep
 shield_verify_atmos
-shield_stop
 ```
 
-Verify the expected physical speaker actually fires.
+`theater_verification_finalize` is the preferred V1 finalizer. It derives the scores from immutable REW evidence. The legacy manual-score finalizer remains only for compatibility and is not the normal acceptance path.
 
-### 3. AVR proof
-
-```text
-theater_inspect
-theater_snapshot
-```
-
-Confirm the live model/topology/preset state and save the original `.ady` independently.
-
-### 4. Start a calibration session
-
-Conceptually:
-
-```text
-theater_autotune_start({
-  positions: 3,
-  baselineAdy: "/path/to/baseline.ady",
-  sweepManifestPath: "/path/to/profiles/sweeps.local.json"
-})
-```
-
-The session is resumable. Codex asks for one microphone movement at a time.
-
-### 5. Measure
-
-With REW Pro, each channel can be triggered through the API.
-
-Without REW Pro, the server prepares the exact measurement and returns a manual checkpoint. Start that measurement in REW, then call:
-
-```text
-theater_autotune_resume_manual
-```
-
-Raw per-channel evidence is kept in the session and the full REW set is saved as:
-
-```text
-rew/theater.mdat
-```
-
-### 6. Nexus
-
-After all requested positions pass their quality gates, the workflow creates a Nexus handoff containing:
-
-```text
-nexus/input.ady
-nexus/handoff.json
-rew/theater.mdat
-```
-
-V1 expects the user to complete A1 Evo Nexus optimization and provide `optimized.ady`.
-
-### 7. MultEQ Editor
-
-Transfer the optimized calibration to **Speaker Preset 2**.
-
-Do not overwrite Preset 1.
-
-### 8. Verification
-
-Perform level-matched measured comparisons of Preset 1 and Preset 2. Only measured evidence should be converted into the score components.
-
-Finalize with all seven metrics:
-
-```text
-bassIntegration
-crossoverIntegration
-timing
-frequencyResponse
-channelConsistency
-seatConsistency
-headroom
-```
-
-The candidate is rejected if:
-
-- aggregate measured score does not improve enough
-- any major component regresses beyond the configured threshold
-- evidence coverage is not high confidence
-
-A rejected candidate does not become the recommended calibration.
-
-## Session layout
+## Immutable measurement layout
 
 ```text
 sessions/<session-id>/
-├── session.json
-├── workflow.json
-├── baseline/
-│   ├── preflight.json
-│   ├── avr.json
-│   └── calibration.ady
-├── measurements/
-│   ├── position-0/
-│   ├── position-1/
-│   └── position-2/
-├── rew/
-│   └── theater.mdat
-├── nexus/
-│   ├── input.ady
-│   ├── handoff.json
-│   └── optimized.ady
-├── optimized/
-│   └── verification.json
-├── events/
-│   └── <append-only event files>
-└── report.md
+  measurements/
+    position-0/
+      TFL/
+        attempt-001-<rew-uuid>.json
+        attempt-002-<rew-uuid>.json
+        accepted.json
 ```
 
-Raw artifacts are never intentionally overwritten. Only the resumable `workflow.json` state document is mutable.
+A failed attempt is never replaced. `accepted.json` is a small mutable workflow pointer to one immutable attempt. Reports retain rejected-attempt history.
 
-## Safety model
+## Automatic measured score
 
-Before audible tests:
+The final score uses:
 
-- verify the Denon and Shield are reachable
-- verify the expected input
-- bound measurement volume
-- verify REW input is active
-- verify expected channel/file mapping
-- verify Atmos decode for encoded sweeps
-- stop on routing mismatch, clipping, missing timing evidence, or obvious distress
+| Component | Weight |
+| --- | ---: |
+| Bass integration | 25% |
+| Crossover integration | 20% |
+| Timing | 15% |
+| Frequency response | 15% |
+| Channel consistency | 10% |
+| Seat consistency | 10% |
+| Headroom | 5% |
 
-Receiver writes are opt-in and must go through an allowlisted adapter. This project never exposes a generic `sendDenonCommand(string)` tool.
+Every component retains its normalized score, raw statistic and units, evidence source, relevant channels/positions, assumptions, and confidence. Headroom derived from a single playback level is explicitly a distortion/THD proxy, not a maximum-output or compression measurement.
+
+Final acceptance requires all of the following:
+
+- identical baseline/candidate coverage
+- valid accepted traces for every required position/channel/type
+- Atmos verification where required
+- all seven metrics present
+- high-confidence evidence
+- candidate aggregate improvement at or above the configured minimum
+- no component regression beyond the configured major-regression threshold
+
+Failure of any gate produces `status = regression_rejected` and `recommendedPreset = 1`. A winning candidate produces `status = complete` and `recommendedPreset = 2`.
+
+## Conceptual V1 workflow
+
+```text
+Fully tune my theater
+  -> inspect receiver/topology/safety
+  -> verify Speaker Preset 1
+  -> measure baseline at all requested positions
+  -> hand off to A1 Evo Nexus
+  -> validate optimized .ady
+  -> human uploads .ady to Speaker Preset 2 through MultEQ Editor
+  -> measure matched Speaker Preset 1 verification dataset
+  -> measure matched Speaker Preset 2 verification dataset
+  -> derive all seven metrics from REW evidence
+  -> compare matched evidence
+  -> reject regressions or accept candidate
+  -> recommend Preset 1 or Preset 2
+  -> write final Markdown report
+```
+
+See `docs/HARDWARE_PROOF.md` for the exact first real-theater TFL procedure and `docs/IMPLEMENTATION.md` for capability status and V2 blockers.
 
 ## Development
 
@@ -376,6 +225,4 @@ npm run check
 npm test
 ```
 
-Hardware-independent tests cover scoring, acceptance/rejection, crossover/delay proposals, report output, immutable session evidence, and path traversal protection.
-
-See `docs/IMPLEMENTATION.md` for phase status and the remaining work required to reach the final one-command experience.
+CI runs both commands under Node 22. Hardware tests are deliberately not faked into CI, real theater validation remains a separate gate before PR #1 should merge.
