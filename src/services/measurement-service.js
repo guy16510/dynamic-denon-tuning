@@ -36,7 +36,7 @@ export class MeasurementService {
     };
   }
 
-  async buildRecord({ sessionId, position, channel, captured, shieldFile = null, playback = null, atmos = null, manualCapture = false, measurementType = 'verification' }) {
+  async buildRecord({ sessionId, position, channel, captured, shieldFile = null, playback = null, atmos = null, manualCapture = false, measurementType = 'verification', expectedPreset = null }) {
     const [frequency, impulse, distortion] = await Promise.all([
       this.rew.trace(captured.id, 'frequency-response'),
       this.rew.trace(captured.id, 'impulse-response').catch(error => ({ unavailable: error.message })),
@@ -49,12 +49,13 @@ export class MeasurementService {
       rewId: String(captured.id)
     });
     const record = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       capturedAt: new Date().toISOString(),
       position,
       channel,
       measurementType,
       expectedChannel: channel,
+      ...(expectedPreset != null ? { preset: expectedPreset, expectedPreset } : {}),
       rewId: String(captured.id),
       attempt: allocation.number,
       summary: captured.summary,
@@ -66,8 +67,15 @@ export class MeasurementService {
       ...(manualCapture ? { manualCapture: true } : {})
     };
     const gate = validateMeasurementRecord(record);
-    record.acceptedForOptimization = gate.valid && (atmos?.verified !== false);
-    record.gate = gate;
+    const atmosRequired = Boolean(shieldFile) || measurementType === 'hardware-proof' || measurementType === 'post-calibration-verification';
+    const atmosPassed = atmosRequired ? atmos?.verified === true : atmos?.verified !== false;
+    record.acceptedForOptimization = gate.valid && atmosPassed;
+    record.gate = {
+      ...gate,
+      atmosRequired,
+      atmosPassed,
+      ...(atmosRequired && !atmosPassed ? { issues: [...gate.issues, 'missing or failed affirmative Atmos verification'] } : {})
+    };
     const path = await this.sessions.writeJson(sessionId, allocation.relativePath, record);
     let accepted = null;
     if (record.acceptedForOptimization) {
@@ -77,11 +85,13 @@ export class MeasurementService {
       position,
       channel,
       measurementType,
+      expectedPreset,
       attempt: allocation.number,
       rewId: record.rewId,
       path: allocation.relativePath,
       accepted: record.acceptedForOptimization,
       acceptedPointer: accepted?.pointerPath || null,
+      atmosRequired,
       atmosVerified: atmos?.verified ?? null,
       distortionAvailable: !distortion.unavailable
     });
@@ -140,7 +150,7 @@ export class MeasurementService {
       await new Promise(resolve => setTimeout(resolve, 500));
       const atmos = verifyAtmos ? await this.denon.verifyAtmos() : { verified: null, skipped: true };
       const captured = await this.rew.waitForNewMeasurement({ beforeMeasurementKeys: started.beforeMeasurementKeys });
-      return this.buildRecord({ sessionId, position, channel, captured, shieldFile, playback, atmos, measurementType });
+      return this.buildRecord({ sessionId, position, channel, captured, shieldFile, playback, atmos, measurementType, expectedPreset });
     } finally {
       await this.shield.stop().catch(() => {});
     }
@@ -183,7 +193,8 @@ export class MeasurementService {
         playback,
         atmos,
         manualCapture: true,
-        measurementType
+        measurementType,
+        expectedPreset
       });
     } finally {
       if (playback) await this.shield.stop().catch(() => {});
