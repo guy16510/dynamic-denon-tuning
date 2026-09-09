@@ -42,3 +42,44 @@ test('measurement records can be read back in deterministic position/channel ord
   const records = await store.readMeasurementRecords(session.id);
   assert.deepEqual(records.map(record => `${record.position}:${record.channel}`), ['0:FL', '0:FR', '1:FR']);
 });
+
+test('accepted attempt pointer is immutable once selected', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'denon-session-'));
+  const store = new SessionStore(root);
+  const session = await store.create();
+  const first = await store.allocateMeasurementAttempt(session.id, { position: 0, channel: 'TFL', rewId: 'uuid-1' });
+  const firstRecord = { position: 0, channel: 'TFL', rewId: 'uuid-1', attempt: first.number };
+  await store.writeJson(session.id, first.relativePath, firstRecord);
+  await store.acceptMeasurementAttempt(session.id, first.relativePath, firstRecord);
+
+  const second = await store.allocateMeasurementAttempt(session.id, { position: 0, channel: 'TFL', rewId: 'uuid-2' });
+  const secondRecord = { position: 0, channel: 'TFL', rewId: 'uuid-2', attempt: second.number };
+  await store.writeJson(session.id, second.relativePath, secondRecord);
+  await assert.rejects(
+    () => store.acceptMeasurementAttempt(session.id, second.relativePath, secondRecord),
+    /refusing to overwrite session artifact.*accepted\.json/
+  );
+
+  const resolved = await store.resolveAcceptedMeasurement(session.id, 0, 'TFL');
+  assert.equal(resolved.record.rewId, 'uuid-1');
+  assert.equal(resolved.record.attempt, 1);
+});
+
+test('accepted pointer mismatch fails closed instead of resolving tampered evidence', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'denon-session-'));
+  const store = new SessionStore(root);
+  const session = await store.create();
+  const attempt = await store.allocateMeasurementAttempt(session.id, { position: 0, channel: 'TFL', rewId: 'uuid-1' });
+  const record = { position: 0, channel: 'TFL', rewId: 'uuid-1', attempt: attempt.number };
+  await store.writeJson(session.id, attempt.relativePath, record);
+  await store.writeJson(session.id, 'measurements/position-0/TFL/accepted.json', {
+    schemaVersion: 1,
+    acceptedAt: new Date().toISOString(),
+    position: 0,
+    channel: 'TFL',
+    rewId: 'wrong-uuid',
+    attempt: 1,
+    recordPath: attempt.relativePath
+  });
+  await assert.rejects(() => store.resolveAcceptedMeasurement(session.id, 0, 'TFL'), /does not match immutable record/);
+});
