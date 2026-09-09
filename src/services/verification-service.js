@@ -148,7 +148,8 @@ export class VerificationService {
           position: state.currentPosition,
           channel,
           beforeMeasurementKeys: measured.beforeMeasurementKeys,
-          shieldFile: spec.shieldFile
+          shieldFile: spec.shieldFile,
+          measurementSettings: measured.measurementSettings
         };
         await this.save(state, 'verification.manual-required', state.pendingMeasurement);
         return { state, measurement: measured, requiresUser: true };
@@ -196,7 +197,8 @@ export class VerificationService {
       shieldFile: pending.shieldFile,
       verifyAtmos: true,
       expectedPreset: state.preset,
-      measurementType: 'post-calibration-verification'
+      measurementType: 'post-calibration-verification',
+      measurementSettings: pending.measurementSettings
     });
     if (measured.wrongPreset) return { state, measured, blocked: true, requiresUser: true, nextAction: measured.next };
     if (!measured.record?.acceptedForOptimization) {
