@@ -39,7 +39,8 @@ export function detectTopology(denonInspection, explicitChannels = null) {
       confidence: unknown.length ? 'medium' : 'high',
       channels,
       unknown,
-      protectedSettingsReadOnly: true
+      protectedSettingsReadOnly: true,
+      blockers: unknown.length ? [`Unknown channel tokens require review: ${unknown.join(', ')}`] : []
     };
   }
 
@@ -59,13 +60,19 @@ export function detectTopology(denonInspection, explicitChannels = null) {
       }
     }
   }
-  const channels = [...active].sort();
+  const detectedChannels = [...active].sort();
+  const confidence = detectedChannels.length >= 2 ? 'medium' : 'low';
   return {
-    source: channels.length ? 'denon-read-only-inspection' : 'undetected',
-    confidence: channels.length >= 2 ? 'medium' : 'low',
-    channels,
+    source: detectedChannels.length ? 'denon-read-only-inspection' : 'undetected',
+    confidence,
+    channels: [],
+    detectedChannels,
     evidence,
     protectedSettingsReadOnly: true,
-    blockers: channels.length ? [] : ['Active speaker topology could not be confidently detected. Supply explicit channels; topology writes remain prohibited.']
+    blockers: [
+      detectedChannels.length
+        ? 'Candidate active channels were observed in read-only Denon/EvoBurrow data, but this payload mapping is not hardware-validated yet. Supply explicit channels for V1.'
+        : 'Active speaker topology could not be confidently detected. Supply explicit channels; topology writes remain prohibited.'
+    ]
   };
 }
