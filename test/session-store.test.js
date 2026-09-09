@@ -63,9 +63,24 @@ test('accepted attempt pointer is immutable once selected', async () => {
   const resolved = await store.resolveAcceptedMeasurement(session.id, 0, 'TFL');
   assert.equal(resolved.record.rewId, 'uuid-1');
   assert.equal(resolved.record.attempt, 1);
+  assert.match(resolved.pointer.recordSha256, /^[a-f0-9]{64}$/);
 });
 
-test('accepted pointer mismatch fails closed instead of resolving tampered evidence', async () => {
+test('accepted record content tampering fails digest verification', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'denon-session-'));
+  const store = new SessionStore(root);
+  const session = await store.create();
+  const attempt = await store.allocateMeasurementAttempt(session.id, { position: 0, channel: 'TFL', rewId: 'uuid-1' });
+  const record = { position: 0, channel: 'TFL', rewId: 'uuid-1', attempt: attempt.number, scoreRelevantValue: 1 };
+  await store.writeJson(session.id, attempt.relativePath, record);
+  await store.acceptMeasurementAttempt(session.id, attempt.relativePath, record);
+
+  await writeFile(store.path(session.id, attempt.relativePath), `${JSON.stringify({ ...record, scoreRelevantValue: 99 }, null, 2)}\n`);
+  await assert.rejects(() => store.resolveAcceptedMeasurement(session.id, 0, 'TFL'), /record digest mismatch/);
+  await assert.rejects(() => store.readMeasurementRecords(session.id, { acceptedOnly: true }), /record digest mismatch/);
+});
+
+test('accepted pointer without digest fails closed', async () => {
   const root = await mkdtemp(join(tmpdir(), 'denon-session-'));
   const store = new SessionStore(root);
   const session = await store.create();
@@ -77,9 +92,9 @@ test('accepted pointer mismatch fails closed instead of resolving tampered evide
     acceptedAt: new Date().toISOString(),
     position: 0,
     channel: 'TFL',
-    rewId: 'wrong-uuid',
+    rewId: 'uuid-1',
     attempt: 1,
     recordPath: attempt.relativePath
   });
-  await assert.rejects(() => store.resolveAcceptedMeasurement(session.id, 0, 'TFL'), /does not match immutable record/);
+  await assert.rejects(() => store.resolveAcceptedMeasurement(session.id, 0, 'TFL'), /missing record digest/);
 });
