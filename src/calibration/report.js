@@ -10,6 +10,23 @@ function componentMap(score) {
   return new Map((score?.components || []).map(component => [component.name, component.score]));
 }
 
+function attemptLine(row) {
+  const parts = [
+    `position ${row.position}`,
+    String(row.channel || 'unknown channel'),
+    `attempt ${row.attempt ?? 'n/a'}`,
+    `REW ${row.rewId || 'n/a'}`
+  ];
+  if (row.path) parts.push(row.path);
+  return parts.join(', ');
+}
+
+function relevantText(component) {
+  const channels = component?.relevant?.channels || [];
+  const positions = component?.relevant?.positions || [];
+  return `channels [${channels.join(', ') || 'none'}], positions [${positions.join(', ') || 'none'}]`;
+}
+
 export function renderCalibrationReport({
   receiver = 'Denon AVR-X3700H',
   topology = null,
@@ -99,7 +116,7 @@ export function renderVerificationReport({ receiver, baselineSessionId, candidat
     `Generated: ${new Date().toISOString()}`,
     `Baseline session: ${baselineSessionId}`,
     `Candidate session: ${candidateSessionId}`,
-    `Preset identities: baseline = Speaker Preset 1, candidate = Speaker Preset 2`,
+    'Preset identities: baseline = Speaker Preset 1, candidate = Speaker Preset 2',
     `Channels measured: ${channels.join(', ') || 'none'}`,
     `Positions measured: ${positions.join(', ') || 'none'}`,
     `Baseline accepted attempts: ${(baselineState?.completed || []).length}`,
@@ -120,17 +137,43 @@ export function renderVerificationReport({ receiver, baselineSessionId, candidat
     '| --- | ---: | ---: | ---: |'
   ];
   for (const name of names) lines.push(`| ${labels[name]} | ${fmt(b.get(name))} | ${fmt(c.get(name))} | ${signed((c.get(name) ?? NaN) - (b.get(name) ?? NaN))} |`);
+
+  lines.push('', '## Measurement attempt history', '');
+  lines.push('### Speaker Preset 1 accepted', '');
+  if (baselineState?.completed?.length) for (const row of baselineState.completed) lines.push(`- ${attemptLine(row)}`);
+  else lines.push('- None');
+  lines.push('', '### Speaker Preset 1 rejected', '');
+  if (baselineState?.rejectedAttempts?.length) for (const row of baselineState.rejectedAttempts) lines.push(`- ${attemptLine(row)}`);
+  else lines.push('- None');
+  lines.push('', '### Speaker Preset 2 accepted', '');
+  if (candidateState?.completed?.length) for (const row of candidateState.completed) lines.push(`- ${attemptLine(row)}`);
+  else lines.push('- None');
+  lines.push('', '### Speaker Preset 2 rejected', '');
+  if (candidateState?.rejectedAttempts?.length) for (const row of candidateState.rejectedAttempts) lines.push(`- ${attemptLine(row)}`);
+  else lines.push('- None');
+
   lines.push('', '## Raw measured evidence', '');
   for (const name of names) {
     const before = result.baseline?.components?.[name];
     const after = result.candidate?.components?.[name];
     lines.push(`### ${labels[name]}`, '');
     lines.push(`- Preset 1: ${before ? `${before.rawStatistic} = ${before.rawValue ?? 'n/a'} ${before.units}; score ${fmt(before.score)}; confidence ${before.confidence}` : 'missing'}`);
+    if (before) {
+      lines.push(`- Preset 1 confidence basis: ${before.confidenceReason || 'not recorded'}`);
+      lines.push(`- Preset 1 evidence source: ${before.evidenceSource}`);
+      lines.push(`- Preset 1 relevant evidence: ${relevantText(before)}`);
+    }
     lines.push(`- Preset 2: ${after ? `${after.rawStatistic} = ${after.rawValue ?? 'n/a'} ${after.units}; score ${fmt(after.score)}; confidence ${after.confidence}` : 'missing'}`);
+    if (after) {
+      lines.push(`- Preset 2 confidence basis: ${after.confidenceReason || 'not recorded'}`);
+      lines.push(`- Preset 2 evidence source: ${after.evidenceSource}`);
+      lines.push(`- Preset 2 relevant evidence: ${relevantText(after)}`);
+    }
     const assumptions = [...new Set([...(before?.assumptions || []), ...(after?.assumptions || [])])];
     for (const assumption of assumptions) lines.push(`- Assumption/caveat: ${assumption}`);
     lines.push('');
   }
+
   lines.push('## Coverage validation', '');
   lines.push(`Matched coverage: ${result.coverage?.valid ? 'pass' : 'FAIL'}`);
   if (result.coverage?.issues?.length) for (const issue of result.coverage.issues) lines.push(`- ${JSON.stringify(issue)}`);
@@ -148,6 +191,6 @@ export function renderVerificationReport({ receiver, baselineSessionId, candidat
   lines.push('## Unresolved issues', '');
   if (result.gates?.length) for (const gate of result.gates) lines.push(`- ${gate}`);
   else lines.push('- None in software verification. Real theater hardware validation remains required before merge.');
-  lines.push('', '## Recommended action', '', result.nextAction, '', '> Every acoustic change must be re-measured before it can be accepted.', '');
+  lines.push('', '## Remaining manual action', '', result.nextAction, '', '> Every acoustic change must be re-measured before it can be accepted.', '');
   return `${lines.join('\n')}\n`;
 }
