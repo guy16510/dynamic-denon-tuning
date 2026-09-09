@@ -14,7 +14,7 @@ function walk(value, path = [], out = []) {
   return out;
 }
 
-function normalizeToken(value) {
+export function normalizeChannelToken(value) {
   const raw = String(value).trim().toUpperCase().replace(/[\s_-]+/g, '');
   const aliases = {
     FRONTLEFT: 'FL', FRONTRIGHT: 'FR', CENTER: 'C',
@@ -25,22 +25,38 @@ function normalizeToken(value) {
     TOPREARLEFT: 'TRL', TOPREARRIGHT: 'TRR',
     FRONTHEIGHTLEFT: 'FHL', FRONTHEIGHTRIGHT: 'FHR',
     REARHEIGHTLEFT: 'RHL', REARHEIGHTRIGHT: 'RHR',
-    SUBWOOFER1: 'SW1', SUB1: 'SW1', SUBWOOFER2: 'SW2', SUB2: 'SW2'
+    SUBWOOFER1: 'SW1', SUB1: 'SW1', SUBWOOFER2: 'SW2', SUB2: 'SW2',
+    SUBWOOFER3: 'SW3', SUB3: 'SW3', SUBWOOFER4: 'SW4', SUB4: 'SW4'
   };
   return aliases[raw] || raw;
 }
 
+export function isKnownChannel(value) {
+  return KNOWN.has(normalizeChannelToken(value));
+}
+
 export function detectTopology(denonInspection, explicitChannels = null) {
   if (Array.isArray(explicitChannels) && explicitChannels.length) {
-    const channels = [...new Set(explicitChannels.map(normalizeToken))];
-    const unknown = channels.filter(channel => !KNOWN.has(channel));
+    const suppliedChannels = [...new Set(explicitChannels.map(normalizeChannelToken))];
+    const unknown = suppliedChannels.filter(channel => !KNOWN.has(channel));
+    if (unknown.length) {
+      return {
+        source: 'user-provided',
+        confidence: 'insufficient',
+        channels: [],
+        suppliedChannels,
+        unknown,
+        protectedSettingsReadOnly: true,
+        blockers: [`Unknown channel tokens cannot be used for V1 measurement: ${unknown.join(', ')}`]
+      };
+    }
     return {
       source: 'user-provided',
-      confidence: unknown.length ? 'medium' : 'high',
-      channels,
-      unknown,
+      confidence: 'high',
+      channels: suppliedChannels,
+      unknown: [],
       protectedSettingsReadOnly: true,
-      blockers: unknown.length ? [`Unknown channel tokens require review: ${unknown.join(', ')}`] : []
+      blockers: []
     };
   }
 
@@ -53,7 +69,7 @@ export function detectTopology(denonInspection, explicitChannels = null) {
     if (leaf.value === false || leaf.value === 0 || /^none|off|disabled$/i.test(String(leaf.value))) continue;
     const candidates = [leaf.path.split('.').at(-1), leaf.value];
     for (const candidate of candidates) {
-      const token = normalizeToken(candidate);
+      const token = normalizeChannelToken(candidate);
       if (KNOWN.has(token)) {
         active.add(token);
         evidence.push({ channel: token, path: leaf.path, value: leaf.value });
