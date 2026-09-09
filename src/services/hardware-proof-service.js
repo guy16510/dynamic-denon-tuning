@@ -122,13 +122,14 @@ export class HardwareProofService {
     if (measured.wrongPreset) return { executed: false, blocked: true, session, measurement: measured, next: measured.next };
     if (measured.manualRequired) {
       const proof = {
-        schemaVersion: 1,
+        schemaVersion: 2,
         status: 'manual_measurement_required',
         channel,
         expectedPreset,
         fileName,
         stimulusPath: resolve(stimulusPath),
         beforeMeasurementKeys: measured.beforeMeasurementKeys,
+        measurementSettings: measured.measurementSettings,
         microphone,
         startedAt: new Date().toISOString()
       };
@@ -153,6 +154,9 @@ export class HardwareProofService {
     if (!microphoneUsable(proof.microphone)) {
       return { executed: false, blocked: true, sessionId, reason: 'Stored microphone usability evidence is missing or ambiguous. Re-run the hardware proof preflight.' };
     }
+    if (!proof.measurementSettings) {
+      return { executed: false, blocked: true, sessionId, reason: 'Stored negotiated REW measurement settings are missing. Re-run the hardware proof rather than accepting ambiguous evidence.' };
+    }
     const measured = await this.measurement.captureManual({
       sessionId,
       position: 0,
@@ -161,7 +165,8 @@ export class HardwareProofService {
       shieldFile: proof.fileName,
       verifyAtmos: true,
       expectedPreset: proof.expectedPreset,
-      measurementType: 'hardware-proof'
+      measurementType: 'hardware-proof',
+      measurementSettings: proof.measurementSettings
     });
     if (measured.wrongPreset) return { executed: false, blocked: true, sessionId, measurement: measured, next: measured.next };
     return this.finalize(sessionId, measured, proof.microphone);
@@ -170,24 +175,27 @@ export class HardwareProofService {
   async finalize(sessionId, measured, microphone) {
     const passed = microphoneUsable(microphone)
       && measured.record.acceptedForOptimization === true
-      && measured.record.atmos?.verified === true;
+      && measured.record.atmos?.verified === true
+      && Boolean(measured.record.measurementSettings);
     const result = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       completedAt: new Date().toISOString(),
       passed,
       channel: measured.record.channel,
       rewId: measured.record.rewId,
       attempt: measured.record.attempt,
+      preset: measured.record.preset ?? null,
+      measurementSettings: measured.record.measurementSettings ?? null,
       microphone,
       atmos: measured.record.atmos,
       quality: measured.record.quality,
       gate: measured.record.gate,
       evidencePath: measured.path,
-      rule: 'A hardware proof passes only when microphone usability is affirmative, REW captured valid evidence, and the receiver reported Atmos during the encoded sweep.'
+      rule: 'A hardware proof passes only when microphone usability is affirmative, negotiated REW settings are preserved, REW captured valid evidence, and the receiver reported Atmos during the encoded sweep.'
     };
     const resultPath = await this.sessions.writeJson(sessionId, 'proof/result.json', result);
     const proof = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: passed ? 'passed' : 'failed',
       resultPath,
       completedAt: result.completedAt
