@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile, access, copyFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, access, copyFile, readdir } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { join, resolve, relative, isAbsolute } from 'node:path';
 
@@ -53,6 +53,20 @@ export class SessionStore {
 
   async readJson(sessionId, relativePath) {
     return JSON.parse(await readFile(this.path(sessionId, relativePath), 'utf8'));
+  }
+
+  async readMeasurementRecords(sessionId) {
+    const measurementRoot = this.path(sessionId, 'measurements');
+    const positions = await readdir(measurementRoot, { withFileTypes: true });
+    const records = [];
+    for (const position of positions.filter(entry => entry.isDirectory()).sort((a, b) => a.name.localeCompare(b.name))) {
+      const directory = join(measurementRoot, position.name);
+      const files = await readdir(directory, { withFileTypes: true });
+      for (const file of files.filter(entry => entry.isFile() && entry.name.endsWith('.json')).sort((a, b) => a.name.localeCompare(b.name))) {
+        records.push(JSON.parse(await readFile(join(directory, file.name), 'utf8')));
+      }
+    }
+    return records;
   }
 
   async appendEvent(sessionId, type, data = {}) {

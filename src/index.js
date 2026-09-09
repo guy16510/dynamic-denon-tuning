@@ -12,8 +12,9 @@ import { SessionStore } from './lib/session-store.js';
 import { MeasurementService } from './services/measurement-service.js';
 import { TheaterService } from './services/theater-service.js';
 import { HardwareProofService } from './services/hardware-proof-service.js';
-import { scoreCalibration } from './calibration/score.js';
+import { scoreCalibration, DEFAULT_WEIGHTS } from './calibration/score.js';
 import { compareScores } from './calibration/compare.js';
+import { deriveCalibrationMetrics } from './calibration/derive-metrics.js';
 import { crossoverCandidates, proposeDelayAdjustment } from './calibration/optimize.js';
 import { serializeError } from './lib/errors.js';
 
@@ -30,7 +31,7 @@ const hardwareProof = new HardwareProofService({ denon, rew, shield, measurement
 
 const server = new McpServer({
   name: 'denon-atmos-autotune',
-  version: '0.2.0'
+  version: '0.3.0'
 });
 
 function response(data, isError = false) {
@@ -48,6 +49,17 @@ function guarded(handler) {
       return response({ error: serializeError(error) }, true);
     }
   };
+}
+
+async function deriveSessionEvidence(sessionId) {
+  const records = await sessions.readMeasurementRecords(sessionId);
+  const derived = deriveCalibrationMetrics(records);
+  const score = scoreCalibration(derived.metrics);
+  return { sessionId, records: records.length, derived, score };
+}
+
+function missingDerivedMetrics(derived) {
+  return Object.keys(DEFAULT_WEIGHTS).filter(name => !Number.isFinite(derived?.metrics?.[name]));
 }
 
 server.tool('theater_inspect', 'Read-only inspection of EvoBurrow, Denon, REW, Shield, preset state, and automation blockers.', {}, guarded(async () => theater.inspect()));
@@ -135,6 +147,51 @@ server.tool('theater_autotune_finalize_verification', 'Finalize a calibration on
   majorRegression: z.number().min(1).max(30).default(8)
 }, guarded(async args => theater.finalizeVerification(args)));
 
+server.tool('theater_autotune_finalize_from_sessions', 'Derive all seven verification components directly from two measured sessions, persist the derivation evidence, and finalize only when no component is missing.', {
+  sessionId: z.string(),
+  baselineSessionId: z.string(),
+  candidateSessionId: z.string(),
+  changes: z.array(z.record(z.any())).default([]),
+  remainingIssues: z.array(z.union([z.string(), z.record(z.any())])).default([]),
+  minimumGain: z.number().min(0).max(20).default(0.5),
+  majorRegression: z.number().min(1).max(30).default(8)
+}, guarded(async ({ sessionId, baselineSessionId, candidateSessionId, changes, remainingIssues, minimumGain, majorRegression }) => {
+  const [baseline, candidate] = await Promise.all([
+    deriveSessionEvidence(baselineSessionId),
+    deriveSessionEvidence(candidateSessionId)
+  ]);
+  const missing = {
+    baseline: missingDerivedMetrics(baseline.derived),
+    candidate: missingDerivedMetrics(candidate.derived)
+  };
+  if (missing.baseline.length || missing.candidate.length) {
+    return {
+      finalized: false,
+      blocked: true,
+      missing,
+      baseline,
+      candidate,
+      rule: 'Automatic final acceptance requires measured evidence for all seven weighted components.'
+    };
+  }
+  const evidencePath = await sessions.writeJson(sessionId, 'optimized/derived-evidence.json', {
+    schemaVersion: 1,
+    derivedAt: new Date().toISOString(),
+    baseline,
+    candidate
+  });
+  const finalized = await theater.finalizeVerification({
+    sessionId,
+    baselineMetrics: baseline.derived.metrics,
+    candidateMetrics: candidate.derived.metrics,
+    changes,
+    remainingIssues,
+    minimumGain,
+    majorRegression
+  });
+  return { finalized: true, evidencePath, baseline, candidate, result: finalized };
+}));
+
 server.tool('measurement_preflight', 'Check REW/Measure From File, live Denon input-volume-mute safety, Shield ADB connectivity, and automatic-measurement capability.', {}, guarded(async () => measurement.preflight()));
 
 server.tool('measurement_measure_channel', 'Prepare REW Measure From File, verify live receiver safety, trigger the measurement when licensed, start the matching Shield sweep, verify Atmos, capture REW evidence, and persist the raw result.', {
@@ -207,6 +264,31 @@ server.tool('calibration_score', 'Calculate the transparent weighted calibration
     headroom: z.number().min(0).max(100).optional()
   })
 }, guarded(async ({ metrics }) => scoreCalibration(metrics)));
+
+server.tool('calibration_derive_session_metrics', 'Derive objective scoring components from stored REW session evidence. Returns both normalized scores and the raw dB/ms/THD statistics used to calculate them.', {
+  sessionId: z.string()
+}, guarded(async ({ sessionId }) => deriveSessionEvidence(sessionId)));
+
+server.tool('calibration_compare_sessions', 'Derive and compare two measured sessions without accepting either one. Missing evidence remains explicit.', {
+  baselineSessionId: z.string(),
+  candidateSessionId: z.string(),
+  minimumGain: z.number().min(0).max(20).default(0.5),
+  majorRegression: z.number().min(1).max(30).default(8)
+}, guarded(async ({ baselineSessionId, candidateSessionId, minimumGain, majorRegression }) => {
+  const [baseline, candidate] = await Promise.all([
+    deriveSessionEvidence(baselineSessionId),
+    deriveSessionEvidence(candidateSessionId)
+  ]);
+  return {
+    baseline,
+    candidate,
+    comparison: compareScores(baseline.score, candidate.score, { minimumGain, majorRegression }),
+    missing: {
+      baseline: missingDerivedMetrics(baseline.derived),
+      candidate: missingDerivedMetrics(candidate.derived)
+    }
+  };
+}));
 
 server.tool('calibration_compare_scores', 'Apply the acceptance rule: measured aggregate improvement plus no major component regression.', {
   baselineMetrics: z.record(z.number()),

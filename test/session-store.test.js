@@ -31,3 +31,14 @@ test('session path traversal is rejected', async () => {
   const session = await store.create();
   assert.throws(() => store.path(session.id, '../../outside'), /escapes session root/);
 });
+
+test('measurement records can be read back in deterministic position/channel order', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'denon-session-'));
+  const store = new SessionStore(root);
+  const session = await store.create();
+  await store.writeJson(session.id, 'measurements/position-1/FR.json', { position: 1, channel: 'FR' });
+  await store.writeJson(session.id, 'measurements/position-0/FL.json', { position: 0, channel: 'FL' });
+  await store.writeJson(session.id, 'measurements/position-0/FR.json', { position: 0, channel: 'FR' });
+  const records = await store.readMeasurementRecords(session.id);
+  assert.deepEqual(records.map(record => `${record.position}:${record.channel}`), ['0:FL', '0:FR', '1:FR']);
+});
