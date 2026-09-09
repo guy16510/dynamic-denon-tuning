@@ -48,6 +48,35 @@ function relevant(records, name) {
   return { channels, positions };
 }
 
+function componentConfidence(name, raw) {
+  if (!raw) return { level: 'insufficient', reason: 'metric has no measured evidence' };
+  if (['bassIntegration', 'crossoverIntegration', 'frequencyResponse', 'headroom'].includes(name)) {
+    const count = Number(raw.recordsUsed);
+    return count >= 3
+      ? { level: 'high', reason: `${count} accepted speaker measurements contributed` }
+      : { level: 'insufficient', reason: `at least 3 accepted speaker measurements are required, found ${Number.isFinite(count) ? count : 0}` };
+  }
+  if (name === 'timing') {
+    const count = Number(raw.positionsUsed);
+    return count >= 1
+      ? { level: 'high', reason: `${count} microphone position${count === 1 ? '' : 's'} had at least three usable arrival times` }
+      : { level: 'insufficient', reason: 'no microphone position had enough usable arrival-time evidence' };
+  }
+  if (name === 'channelConsistency') {
+    const count = Number(raw.comparisons);
+    return count >= 1
+      ? { level: 'high', reason: `${count} matched mirror-channel comparison${count === 1 ? '' : 's'} contributed` }
+      : { level: 'insufficient', reason: 'no matched mirror-channel comparison was available' };
+  }
+  if (name === 'seatConsistency') {
+    const count = Number(raw.comparisons);
+    return count >= 1
+      ? { level: 'high', reason: `${count} inter-seat comparison${count === 1 ? '' : 's'} contributed` }
+      : { level: 'insufficient', reason: 'no inter-seat comparison was available' };
+  }
+  return { level: 'insufficient', reason: 'no confidence rule is defined for this metric' };
+}
+
 export function validateVerificationDataset(records, { expectedPreset = null } = {}) {
   const issues = [];
   const accepted = (records || []).filter(record => record.acceptedForOptimization === true);
@@ -123,6 +152,7 @@ export function deriveMeasuredScore(records) {
     const score = derived.metrics?.[name];
     const raw = derived.evidence?.[name] || null;
     if (!Number.isFinite(score) || !raw) continue;
+    const confidence = componentConfidence(name, raw);
     components[name] = {
       score,
       rawStatistic: raw.statistic || 'derived REW statistic',
@@ -131,19 +161,25 @@ export function deriveMeasuredScore(records) {
       evidenceSource: 'REW accepted immutable measurement attempts',
       relevant: relevant(records, name),
       assumptions: [raw.caveat].filter(Boolean),
-      confidence: 'high',
+      confidence: confidence.level,
+      confidenceReason: confidence.reason,
       evidence: raw
     };
   }
   const numeric = Object.fromEntries(Object.entries(components).map(([name, value]) => [name, value.score]));
   const score = scoreCalibration(numeric);
   const missing = Object.keys(DEFAULT_WEIGHTS).filter(name => !components[name]);
+  const insufficientConfidence = Object.entries(components)
+    .filter(([, component]) => component.confidence !== 'high')
+    .map(([name]) => name);
+  const highConfidence = missing.length === 0 && insufficientConfidence.length === 0 && score.evidenceWeight === 1;
   return {
     derived,
     components,
-    score: { ...score, confidence: missing.length === 0 && score.evidenceWeight === 1 ? 'high' : score.confidence },
+    score: { ...score, confidence: highConfidence ? 'high' : 'insufficient' },
     missing,
-    confidence: missing.length === 0 && score.evidenceWeight === 1 ? 'high' : 'insufficient'
+    insufficientConfidence,
+    confidence: highConfidence ? 'high' : 'insufficient'
   };
 }
 
@@ -156,6 +192,8 @@ export function finalizeMeasuredComparison(baselineRecords, candidateRecords, { 
   if (!coverage.valid) gates.push('matched coverage failed');
   if (baseline.missing.length) gates.push(`baseline missing metrics: ${baseline.missing.join(', ')}`);
   if (candidate.missing.length) gates.push(`candidate missing metrics: ${candidate.missing.join(', ')}`);
+  if (baseline.insufficientConfidence.length) gates.push(`baseline low-confidence metrics: ${baseline.insufficientConfidence.join(', ')}`);
+  if (candidate.insufficientConfidence.length) gates.push(`candidate low-confidence metrics: ${candidate.insufficientConfidence.join(', ')}`);
   if (baseline.confidence !== 'high' || candidate.confidence !== 'high') gates.push('high-confidence measured evidence is required');
   if (comparison.regressions.length) gates.push('candidate has a major component regression');
   if (!(comparison.overallDelta >= minimumGain)) gates.push(`candidate aggregate gain is below ${minimumGain}`);
