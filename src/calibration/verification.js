@@ -32,10 +32,7 @@ function evidenceValue(name, evidence) {
 function relevant(records, name) {
   const channels = [...new Set(records.map(record => String(record.channel).toUpperCase()))].sort();
   const positions = [...new Set(records.map(record => record.position))].sort((a, b) => a - b);
-  if (name === 'channelConsistency') {
-    return { channels: channels.filter(channel => !/^(?:SW|SUB)/i.test(channel)), positions };
-  }
-  if (name === 'headroom') {
+  if (name === 'channelConsistency' || name === 'headroom') {
     return { channels: channels.filter(channel => !/^(?:SW|SUB)/i.test(channel)), positions };
   }
   return { channels, positions };
@@ -47,13 +44,13 @@ export function validateVerificationDataset(records, { expectedPreset = null } =
   const duplicate = new Set();
   const seen = new Set();
   for (const record of accepted) {
-    const gate = validateMeasurementRecord(record);
-    if (!gate.valid) issues.push({ type: 'invalid_trace', key: identity(record), issues: gate.issues });
-    if (record.atmos?.verified === false) issues.push({ type: 'atmos_failed', key: identity(record) });
-    if (expectedPreset != null && record.preset != null && record.preset !== expectedPreset) {
-      issues.push({ type: 'preset_mismatch', key: identity(record), expectedPreset, actualPreset: record.preset });
-    }
     const key = identity(record);
+    const gate = validateMeasurementRecord(record);
+    if (!gate.valid) issues.push({ type: 'invalid_trace', key, issues: gate.issues });
+    if (record.atmos?.verified !== true) issues.push({ type: 'atmos_unverified', key, actual: record.atmos?.verified ?? null });
+    if (expectedPreset != null && record.preset !== expectedPreset) {
+      issues.push({ type: 'preset_mismatch', key, expectedPreset, actualPreset: record.preset ?? null });
+    }
     if (seen.has(key)) duplicate.add(key);
     seen.add(key);
   }
