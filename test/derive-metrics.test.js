@@ -83,3 +83,28 @@ test('headroom remains missing when distortion evidence is unavailable', () => {
   assert.equal(derived.metrics.headroom, undefined);
   assert.ok(derived.caveats.some(value => /headroom was not scored/i.test(value)));
 });
+
+test('non-finite magnitude removal preserves its frequency pairing', () => {
+  const withGap = theaterRecords();
+  const pairedRemoval = structuredClone(withGap);
+  const index = 40;
+  withGap[0].traces.frequencyResponse.data.magnitude[index] = Number.NaN;
+  pairedRemoval[0].traces.frequencyResponse.data.frequency.splice(index, 1);
+  pairedRemoval[0].traces.frequencyResponse.data.magnitude.splice(index, 1);
+
+  const fromGap = deriveCalibrationMetrics(withGap);
+  const fromPairedRemoval = deriveCalibrationMetrics(pairedRemoval);
+  assert.equal(fromGap.evidence.frequencyResponse.valueDb, fromPairedRemoval.evidence.frequencyResponse.valueDb);
+  assert.equal(fromGap.evidence.bassIntegration.valueDb, fromPairedRemoval.evidence.bassIntegration.valueDb);
+  assert.equal(fromGap.evidence.crossoverIntegration.valueDb, fromPairedRemoval.evidence.crossoverIntegration.valueDb);
+});
+
+test('records not affirmatively accepted are excluded from metric extraction', () => {
+  const baseline = theaterRecords();
+  const expected = deriveCalibrationMetrics(baseline);
+  const rogue = measurement('C', 0, { roughnessDb: 50, thdPercent: 50 });
+  delete rogue.acceptedForOptimization;
+  const actual = deriveCalibrationMetrics([...baseline, rogue]);
+  assert.deepEqual(actual.metrics, expected.metrics);
+  assert.equal(actual.acceptedRecordCount, expected.acceptedRecordCount);
+});
