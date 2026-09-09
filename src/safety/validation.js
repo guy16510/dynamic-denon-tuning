@@ -37,6 +37,12 @@ export function validateMeasurementRecord(record) {
   if (!Number.isInteger(record?.position) || record.position < 0) issues.push('invalid microphone position');
   if (!record?.measurementType) issues.push('missing measurement type');
   if (!record?.traces?.frequencyResponse) issues.push('missing frequency response trace');
+  else {
+    const rawQuality = validateTrace(record.traces.frequencyResponse);
+    if (!rawQuality.valid) issues.push(...rawQuality.issues.map(issue => `raw trace: ${issue}`));
+    const strictFrequencyAxis = record?.measurementType === 'hardware-proof' || record?.measurementType === 'post-calibration-verification';
+    if (strictFrequencyAxis && rawQuality.frequencyPoints < 100) issues.push('raw trace is missing a usable frequency axis');
+  }
   if (!record?.quality) issues.push('missing measurement quality evidence');
   else if (record.quality.valid !== true) issues.push(...(record.quality.issues || ['measurement quality gate did not affirmatively pass']));
   const settingsRequired = record?.measurementType === 'hardware-proof' || record?.measurementType === 'post-calibration-verification';
