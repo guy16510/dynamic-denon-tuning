@@ -102,3 +102,50 @@ test('failed REW archive creation blocks Nexus and is retried on resume', async 
   assert.equal(f.getWorkflow().rewMdat, join(root, 'rew/theater.mdat'));
   assert.equal(saves, 2);
 });
+
+test('canonical AVR baseline snapshot is captured only after Speaker Preset 1 is verified', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'theater-'));
+  let current = {
+    sessionId: 's',
+    status: 'awaiting_position',
+    currentPosition: 0,
+    currentChannelIndex: 0,
+    positions: 1,
+    channels: ['TFL'],
+    blockers: ['Speaker Preset 2 is active. Select Speaker Preset 1 before baseline measurement.'],
+    baselineSnapshotConfirmed: false,
+    baselineSnapshotPath: join(root, 'baseline/avr-at-start.json'),
+    sweepManifestPath: null
+  };
+  let snapshotCalls = 0;
+  const events = [];
+  const sessions = {
+    path(sessionId, relativePath) { return join(root, relativePath); },
+    async readJson() { return structuredClone(current); },
+    async writeJson(sessionId, path, value) {
+      if (path === 'workflow.json') current = structuredClone(value);
+      return join(root, path);
+    },
+    async appendEvent(sessionId, type, data) { events.push({ type, data }); }
+  };
+  const service = new TheaterService({
+    config: baseConfig(),
+    evoburrow: {},
+    denon: {
+      async inspect() { return { presetStatus: { activeSpeakerPreset: 1 } }; },
+      async snapshot() { snapshotCalls += 1; return { activeSpeakerPreset: 1, marker: 'canonical-baseline' }; }
+    },
+    rew: {},
+    shield: {},
+    nexus: {},
+    measurement: {},
+    sessions
+  });
+
+  const result = await service.advance({ sessionId: 's', ready: false });
+  assert.equal(snapshotCalls, 1);
+  assert.equal(result.workflow.baselineSnapshotConfirmed, true);
+  assert.equal(result.workflow.baselineSnapshotPath, join(root, 'baseline/avr.json'));
+  assert.ok(events.some(event => event.type === 'baseline.preset1-snapshot'));
+  assert.equal(result.requiresUser, true);
+});
