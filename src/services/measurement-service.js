@@ -14,6 +14,10 @@ function measurementSettings(configuration, stimulusPath = null) {
   };
 }
 
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 export class MeasurementService {
   constructor({ rew, shield, denon, sessions }) {
     this.rew = rew;
@@ -40,13 +44,14 @@ export class MeasurementService {
       shield,
       denon,
       autoMeasure,
+      filePlaybackArmDelayMs: this.rew.config?.filePlaybackArmDelayMs ?? null,
       blockers: [...new Set(blockers)],
       readyForAudibleMeasurement: blockers.length === 0,
       fullyAutomatic: blockers.length === 0 && autoMeasure.automated === true
     };
   }
 
-  async buildRecord({ sessionId, position, channel, captured, shieldFile = null, playback = null, atmos = null, manualCapture = false, measurementType = 'verification', expectedPreset = null, measurementSettings: settings = null }) {
+  async buildRecord({ sessionId, position, channel, captured, shieldFile = null, playback = null, atmos = null, manualCapture = false, measurementType = 'verification', expectedPreset = null, measurementSettings: settings = null, playbackArm = null }) {
     const [frequency, impulse, distortion] = await Promise.all([
       this.rew.trace(captured.id, 'frequency-response'),
       this.rew.trace(captured.id, 'impulse-response').catch(error => ({ unavailable: error.message })),
@@ -59,7 +64,7 @@ export class MeasurementService {
       rewId: String(captured.id)
     });
     const record = {
-      schemaVersion: 5,
+      schemaVersion: 6,
       capturedAt: new Date().toISOString(),
       position,
       channel,
@@ -71,6 +76,7 @@ export class MeasurementService {
       summary: captured.summary,
       shieldFile,
       ...(settings ? { measurementSettings: settings } : {}),
+      ...(playbackArm ? { playbackArm } : {}),
       ...(playback ? { shield: playback } : {}),
       ...(atmos ? { atmos } : {}),
       quality,
@@ -103,6 +109,7 @@ export class MeasurementService {
       accepted: record.acceptedForOptimization,
       acceptedPointer: accepted?.pointerPath || null,
       measurementSettings: settings,
+      playbackArm,
       atmosRequired,
       atmosVerified: atmos?.verified ?? null,
       distortionAvailable: !distortion.unavailable
@@ -131,7 +138,8 @@ export class MeasurementService {
     const settings = measurementSettings(configuration, stimulusPath);
     const started = await this.rew.startMeasurement({
       title: title || `${channel}${position}`,
-      notes: notes || `dynamic-denon-tuning position=${position} channel=${channel}`
+      notes: notes || `dynamic-denon-tuning position=${position} channel=${channel}`,
+      startDelaySeconds: 0
     });
 
     if (started.manualRequired) {
@@ -155,17 +163,25 @@ export class MeasurementService {
         configuration,
         measurementSettings: settings,
         ...started,
-        next: 'Start the prepared measurement in REW so it is waiting for file playback, then resume this workflow. The resume step will start the Shield sweep and capture the result.'
+        next: 'Start the prepared measurement in REW and wait until REW shows that it is waiting for the file-playback timing reference. Then resume this workflow. The resume step starts the Shield sweep.'
       };
     }
+
+    const armDelayMs = Number(this.rew.config?.filePlaybackArmDelayMs ?? 0);
+    if (Number.isFinite(armDelayMs) && armDelayMs > 0) await delay(armDelayMs);
+    const playbackArm = {
+      mode: 'automatic-delay',
+      delayMs: Number.isFinite(armDelayMs) ? armDelayMs : 0,
+      reason: 'REW file playback captures its noise floor and then waits for the external acoustic timing reference before the Shield sweep starts.'
+    };
 
     let playback;
     try {
       playback = await this.shield.playSweep(channel, shieldFile);
-      await new Promise(resolve => setTimeout(resolve, 500));
+      await delay(500);
       const atmos = verifyAtmos ? await this.denon.verifyAtmos() : { verified: null, skipped: true };
       const captured = await this.rew.waitForNewMeasurement({ beforeMeasurementKeys: started.beforeMeasurementKeys });
-      return this.buildRecord({ sessionId, position, channel, captured, shieldFile, playback, atmos, measurementType, expectedPreset, measurementSettings: settings });
+      return this.buildRecord({ sessionId, position, channel, captured, shieldFile, playback, atmos, measurementType, expectedPreset, measurementSettings: settings, playbackArm });
     } finally {
       await this.shield.stop().catch(() => {});
     }
@@ -193,7 +209,7 @@ export class MeasurementService {
       let atmos = null;
       if (shieldFile) {
         playback = await this.shield.playSweep(channel, shieldFile);
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await delay(500);
         atmos = verifyAtmos ? await this.denon.verifyAtmos() : { verified: null, skipped: true };
         captured = await this.rew.waitForNewMeasurement({ beforeMeasurementKeys });
       } else {
@@ -210,7 +226,12 @@ export class MeasurementService {
         manualCapture: true,
         measurementType,
         expectedPreset,
-        measurementSettings: settings
+        measurementSettings: settings,
+        playbackArm: shieldFile ? {
+          mode: 'human-confirmed',
+          delayMs: null,
+          reason: 'Manual resume requires the operator to wait until REW is visibly waiting for the file-playback timing reference before resuming.'
+        } : null
       });
     } finally {
       if (playback) await this.shield.stop().catch(() => {});
