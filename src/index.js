@@ -11,6 +11,7 @@ import { NexusAdapter } from './adapters/nexus.js';
 import { SessionStore } from './lib/session-store.js';
 import { MeasurementService } from './services/measurement-service.js';
 import { TheaterService } from './services/theater-service.js';
+import { HardwareProofService } from './services/hardware-proof-service.js';
 import { scoreCalibration } from './calibration/score.js';
 import { compareScores } from './calibration/compare.js';
 import { crossoverCandidates, proposeDelayAdjustment } from './calibration/optimize.js';
@@ -25,10 +26,11 @@ const shield = new ShieldAdapter(config.shield);
 const nexus = new NexusAdapter(config.nexus);
 const measurement = new MeasurementService({ rew, shield, denon, sessions });
 const theater = new TheaterService({ config, evoburrow, denon, rew, shield, nexus, measurement, sessions });
+const hardwareProof = new HardwareProofService({ denon, rew, shield, measurement, sessions });
 
 const server = new McpServer({
   name: 'denon-atmos-autotune',
-  version: '0.1.0'
+  version: '0.2.0'
 });
 
 function response(data, isError = false) {
@@ -57,6 +59,17 @@ server.tool('theater_snapshot', 'Capture a read-only Denon baseline and optional
 server.tool('theater_prepare_measurement_state', 'Plan/apply the allowlisted Shield input, safe master volume, and unmute state through EvoBurrow. Writes remain disabled unless ALLOW_RECEIVER_WRITES=1 and confirm=true.', {
   confirm: z.boolean().default(false)
 }, guarded(async ({ confirm }) => denon.prepareMeasurementState({ confirm })));
+
+server.tool('theater_hardware_proof', 'Plan or run one evidence-backed Atmos channel proof through Shield -> Denon -> room -> mic -> REW. No audio is emitted unless confirmAudible=true.', {
+  channel: z.string().default('TFL'),
+  fileName: z.string(),
+  stimulusPath: z.string(),
+  confirmAudible: z.boolean().default(false)
+}, guarded(async args => hardwareProof.run(args)));
+
+server.tool('theater_hardware_proof_resume', 'Resume a hardware proof when REW requires a manually-started measurement. Start the prepared measurement in REW first; this call starts the Shield sweep and captures evidence.', {
+  sessionId: z.string()
+}, guarded(async ({ sessionId }) => hardwareProof.resume({ sessionId })));
 
 server.tool('theater_set_distance', 'Request a speaker-distance/delay change. Fails closed until EvoBurrow exposes a baseline-bound allowlisted implementation.', {
   channel: z.string(),
@@ -92,7 +105,7 @@ server.tool('theater_autotune_advance', 'Advance a resumable calibration workflo
   uploadComplete: z.boolean().default(false)
 }, guarded(async args => theater.advance(args)));
 
-server.tool('theater_autotune_resume_manual', 'Capture a manually-started REW measurement when automatic API measurement is unavailable.', {
+server.tool('theater_autotune_resume_manual', 'Resume a manually-started REW measurement. This call starts the matching Shield sweep, verifies Atmos, waits for the REW result, and persists evidence.', {
   sessionId: z.string()
 }, guarded(async ({ sessionId }) => theater.resumeManualMeasurement({ sessionId })));
 
@@ -122,9 +135,9 @@ server.tool('theater_autotune_finalize_verification', 'Finalize a calibration on
   majorRegression: z.number().min(1).max(30).default(8)
 }, guarded(async args => theater.finalizeVerification(args)));
 
-server.tool('measurement_preflight', 'Check REW microphone/audio readiness, Shield ADB connectivity, and whether fully automatic REW measurement is available.', {}, guarded(async () => measurement.preflight()));
+server.tool('measurement_preflight', 'Check REW/Measure From File, live Denon input-volume-mute safety, Shield ADB connectivity, and automatic-measurement capability.', {}, guarded(async () => measurement.preflight()));
 
-server.tool('measurement_measure_channel', 'Prepare REW Measure From File, trigger the measurement when licensed, start the matching Shield sweep, verify Atmos, capture REW evidence, and persist the raw result.', {
+server.tool('measurement_measure_channel', 'Prepare REW Measure From File, verify live receiver safety, trigger the measurement when licensed, start the matching Shield sweep, verify Atmos, capture REW evidence, and persist the raw result.', {
   sessionId: z.string(),
   position: z.number().int().min(0).max(6),
   channel: z.string(),
@@ -151,7 +164,7 @@ server.tool('measurement_measure_channel', 'Prepare REW Measure From File, trigg
   };
 }));
 
-server.tool('measurement_capture_new', 'Adopt exactly one new REW measurement after a manual measurement step and persist its evidence.', {
+server.tool('measurement_capture_new', 'Complete or adopt exactly one manual REW measurement and persist its evidence. When shieldFile is supplied, the server starts that encoded Shield sweep before waiting for the REW result.', {
   sessionId: z.string(),
   position: z.number().int().min(0).max(6),
   channel: z.string(),
@@ -172,9 +185,11 @@ server.tool('shield_play_sweep', 'Start one configured encoded sweep on the Shie
 
 server.tool('shield_stop', 'Stop/pause current Shield media playback.', {}, guarded(async () => shield.stop()));
 
-server.tool('shield_verify_atmos', 'Read receiver status through EvoBurrow and report whether the active decoder/status identifies Atmos.', {}, guarded(async () => denon.verifyAtmos()));
+server.tool('shield_verify_atmos', 'Read receiver status through EvoBurrow and poll briefly for evidence that the active decoder/status identifies Atmos.', {}, guarded(async () => denon.verifyAtmos()));
 
-server.tool('rew_status', 'Read REW version, audio state, measurement modes, and command capability without changing anything.', {}, guarded(async () => rew.status()));
+server.tool('rew_status', 'Read REW version, audio state, measurement modes, and negotiated command capability without changing anything.', {}, guarded(async () => rew.status()));
+
+server.tool('rew_measurement_contract', 'Read REW-advertised command/playback/mode choices and verify the exact Measure From File contract this project will use.', {}, guarded(async () => rew.measurementContract()));
 
 server.tool('rew_input_level_check', 'Run EvoBurrow bounded microphone input-level capture. Requires confirm=true because it starts capture, but emits no sweep.', {
   durationMs: z.number().int().min(1000).max(15000).default(4000),

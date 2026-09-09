@@ -14,6 +14,14 @@ function boolEnv(name, fallback = false) {
   return /^(1|true|yes|on)$/i.test(value);
 }
 
+function inputToken(value) {
+  const token = String(value || '').trim().toUpperCase();
+  if (!/^[A-Z0-9/+-]{1,20}$/.test(token)) {
+    throw new Error('DENON_SHIELD_INPUT must be a Denon protocol input token such as MPLAY, GAME, AUX1, or BD');
+  }
+  return token;
+}
+
 export function loadConfig() {
   const volumeDb = numberEnv('AUTOTUNE_MEASUREMENT_VOLUME_DB', -30);
   if (volumeDb < -60 || volumeDb > -15) {
@@ -29,7 +37,7 @@ export function loadConfig() {
     denon: {
       host: process.env.DENON_HOST || '192.168.2.8',
       port: numberEnv('DENON_PORT', 23),
-      shieldInput: process.env.DENON_SHIELD_INPUT || 'MEDIA PLAYER',
+      shieldInput: inputToken(process.env.DENON_SHIELD_INPUT || 'MPLAY'),
       measurementVolumeDb: volumeDb,
       allowWrites: boolEnv('ALLOW_RECEIVER_WRITES', false)
     },

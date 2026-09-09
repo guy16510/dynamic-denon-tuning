@@ -1,6 +1,6 @@
 {
   "name": "dynamic-denon-tuning",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Codex-controlled, evidence-gated auto-tuning orchestrator for Denon Atmos theaters",
   "type": "module",
   "private": true,

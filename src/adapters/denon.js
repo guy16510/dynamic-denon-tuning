@@ -1,15 +1,67 @@
 import { CapabilityError, SafetyError } from '../lib/errors.js';
 
+function statusLines(payload) {
+  if (Array.isArray(payload)) return payload.map(String);
+  if (Array.isArray(payload?.responses)) return payload.responses.map(String);
+  if (Array.isArray(payload?.raw)) return payload.raw.map(String);
+  if (Array.isArray(payload?.status?.responses)) return payload.status.responses.map(String);
+  if (Array.isArray(payload?.status?.raw)) return payload.status.raw.map(String);
+  return [];
+}
+
+function decodeMasterVolume(line) {
+  const match = String(line).trim().match(/^MV(\d{2,3})$/i);
+  if (!match) return null;
+  const raw = match[1];
+  let scale;
+  if (raw.length === 3 && raw.endsWith('5')) scale = Number(raw.slice(0, 2)) + 0.5;
+  else scale = Number(raw);
+  if (!Number.isFinite(scale)) return null;
+  return scale - 80;
+}
+
+export function parseDenonStatus(payload) {
+  const lines = statusLines(payload);
+  const state = {
+    power: null,
+    input: null,
+    mute: null,
+    volumeDb: null,
+    soundMode: null
+  };
+
+  for (const raw of lines) {
+    const line = String(raw).trim();
+    if (/^PWON$/i.test(line)) state.power = 'on';
+    else if (/^PWSTANDBY$/i.test(line)) state.power = 'standby';
+    else if (/^SI/i.test(line)) state.input = line.slice(2).trim().toUpperCase();
+    else if (/^MUON$/i.test(line)) state.mute = true;
+    else if (/^MUOFF$/i.test(line)) state.mute = false;
+    else if (/^MV\d/i.test(line)) state.volumeDb = decodeMasterVolume(line);
+    else if (/^MS/i.test(line)) state.soundMode = line.slice(2).trim();
+  }
+
+  return { state, lines };
+}
+
 export class DenonAdapter {
   constructor(config, evoburrow) {
     this.config = config;
     this.evoburrow = evoburrow;
   }
 
+  async status() {
+    const raw = await this.evoburrow.call('denon_status', {
+      host: this.config.host,
+      port: this.config.port
+    });
+    return { raw, ...parseDenonStatus(raw) };
+  }
+
   async inspect() {
     const [probe, status, models, presetStatus] = await Promise.all([
       this.evoburrow.call('denon_probe', { host: this.config.host }),
-      this.evoburrow.call('denon_status', { host: this.config.host, port: this.config.port }),
+      this.status(),
       this.evoburrow.call('receiver_models', { brand: 'Denon', model: 'X3700H' }).catch(error => ({ unavailable: error.message })),
       this.evoburrow.call('calibration_preset_status', { host: this.config.host, port: this.config.port, ...(this.evoburrow.config.home ? { home: this.evoburrow.config.home } : {}) }).catch(error => ({ unavailable: error.message }))
     ]);
@@ -63,16 +115,64 @@ export class DenonAdapter {
     return { applied: true, proposed, executed };
   }
 
-  async verifyAtmos() {
-    const status = await this.evoburrow.call('denon_status', {
-      host: this.config.host,
-      port: this.config.port
-    });
-    const text = JSON.stringify(status).toUpperCase();
+  assertSafeAudibleTest({ expectedInput, expectedMaxVolumeDb = -15 }) {
+    if (this.config.measurementVolumeDb > expectedMaxVolumeDb) {
+      throw new SafetyError('Configured measurement volume exceeds the safety ceiling', {
+        configured: this.config.measurementVolumeDb,
+        ceiling: expectedMaxVolumeDb
+      });
+    }
+    if (expectedInput && String(expectedInput).toUpperCase() !== String(this.config.shieldInput).toUpperCase()) {
+      throw new SafetyError('Expected measurement input does not match configured Shield input');
+    }
+  }
+
+  async preflightAudibleTest({ expectedInput = this.config.shieldInput, maximumVolumeDb = this.config.measurementVolumeDb } = {}) {
+    this.assertSafeAudibleTest({ expectedInput });
+    const live = await this.status();
+    const expected = String(expectedInput || '').trim().toUpperCase();
+    const blockers = [];
+
+    if (live.state.power !== 'on') blockers.push(`Receiver power must be ON, reported ${live.state.power ?? 'unknown'}.`);
+    if (!live.state.input) blockers.push('Receiver input could not be verified from Denon status.');
+    else if (expected && live.state.input !== expected) blockers.push(`Receiver input is ${live.state.input}, expected ${expected}.`);
+    if (!Number.isFinite(live.state.volumeDb)) blockers.push('Receiver master volume could not be verified from Denon status.');
+    else if (live.state.volumeDb > maximumVolumeDb + 0.01) blockers.push(`Receiver volume ${live.state.volumeDb.toFixed(1)} dB is louder than the allowed ${maximumVolumeDb.toFixed(1)} dB measurement ceiling.`);
+    if (live.state.mute === null) blockers.push('Receiver mute state could not be verified from Denon status.');
+    else if (live.state.mute) blockers.push('Receiver is muted.');
+
     return {
-      verified: /ATMOS/.test(text),
-      status,
-      evidence: /ATMOS/.test(text) ? 'Receiver status contains ATMOS.' : 'Receiver status does not currently contain ATMOS.'
+      ready: blockers.length === 0,
+      expected: { input: expected, maximumVolumeDb },
+      state: live.state,
+      blockers,
+      evidence: live.lines
+    };
+  }
+
+  async requireSafeAudibleTest(options = {}) {
+    const result = await this.preflightAudibleTest(options);
+    if (!result.ready) {
+      throw new SafetyError('Live receiver state is not safe/ready for an audible measurement', result);
+    }
+    return result;
+  }
+
+  async verifyAtmos({ timeoutMs = 5000, pollMs = 400 } = {}) {
+    const deadline = Date.now() + timeoutMs;
+    let last = null;
+    do {
+      last = await this.status();
+      const text = JSON.stringify(last).toUpperCase();
+      if (/ATMOS/.test(text)) {
+        return { verified: true, status: last, evidence: 'Receiver status contains ATMOS.' };
+      }
+      if (Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, pollMs));
+    } while (Date.now() < deadline);
+    return {
+      verified: false,
+      status: last,
+      evidence: `Receiver status did not contain ATMOS within ${timeoutMs} ms.`
     };
   }
 
@@ -88,16 +188,4 @@ export class DenonAdapter {
   async setLevel(channel, value) { return this.unsupportedCalibrationWrite('channel trim', { channel, value }); }
   async setCrossover(channel, value) { return this.unsupportedCalibrationWrite('crossover', { channel, value }); }
   async selectPreset(preset) { return this.unsupportedCalibrationWrite('speaker preset', { preset }); }
-
-  assertSafeAudibleTest({ expectedInput, expectedMaxVolumeDb = -15 }) {
-    if (this.config.measurementVolumeDb > expectedMaxVolumeDb) {
-      throw new SafetyError('Configured measurement volume exceeds the safety ceiling', {
-        configured: this.config.measurementVolumeDb,
-        ceiling: expectedMaxVolumeDb
-      });
-    }
-    if (expectedInput && expectedInput !== this.config.shieldInput) {
-      throw new SafetyError('Expected measurement input does not match configured Shield input');
-    }
-  }
 }

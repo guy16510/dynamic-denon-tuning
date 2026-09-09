@@ -1,8 +1,45 @@
 import { CapabilityError } from '../lib/errors.js';
 
+function unwrapScalar(value) {
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
+  if (value && typeof value === 'object') {
+    for (const key of ['value', 'message', 'name']) {
+      if (typeof value[key] === 'string' || typeof value[key] === 'number' || typeof value[key] === 'boolean') return value[key];
+    }
+  }
+  return value;
+}
+
+export function normalizeChoices(value) {
+  const unwrapped = Array.isArray(value)
+    ? value
+    : (value && typeof value === 'object' ? (value.choices ?? value.values ?? value.options ?? value) : value);
+  if (!Array.isArray(unwrapped)) return [];
+  return unwrapped
+    .map(item => {
+      if (typeof item === 'string') return item;
+      if (item && typeof item === 'object') return item.value ?? item.name ?? item.label ?? item.message ?? null;
+      return item == null ? null : String(item);
+    })
+    .filter(value => typeof value === 'string' && value.trim())
+    .map(value => value.trim());
+}
+
+export function selectChoice(choices, matchers) {
+  for (const matcher of matchers) {
+    const found = choices.find(choice => matcher.test(choice));
+    if (found) return found;
+  }
+  return null;
+}
+
 function asEntries(measurements) {
   if (Array.isArray(measurements)) return measurements.map((value, index) => [String(index + 1), value]);
   return Object.entries(measurements || {});
+}
+
+function measurementKey(id, value) {
+  return String(value?.uuid || id);
 }
 
 export class RewAdapter {
@@ -36,30 +73,61 @@ export class RewAdapter {
     }
   }
 
+  async measurementContract() {
+    const [commandResponse, playbackResponse, measurementResponse] = await Promise.all([
+      this.request('/measure/commands'),
+      this.request('/measure/playback-mode/choices'),
+      this.request('/measure/measurement-mode/choices')
+    ]);
+    const commands = normalizeChoices(commandResponse);
+    const playbackModes = normalizeChoices(playbackResponse);
+    const measurementModes = normalizeChoices(measurementResponse);
+    const selected = {
+      command: selectChoice(commands, [/^SPL$/i]),
+      playbackMode: selectChoice(playbackModes, [/^from\s+file$/i, /file/i]),
+      measurementMode: selectChoice(measurementModes, [/^single$/i, /^single\b/i])
+    };
+    const blockers = [];
+    if (!selected.command) blockers.push('REW does not advertise the SPL measurement command.');
+    if (!selected.playbackMode) blockers.push('REW does not advertise a file playback mode.');
+    if (!selected.measurementMode) blockers.push('REW does not advertise a single-measurement mode.');
+    return {
+      valid: blockers.length === 0,
+      commands,
+      playbackModes,
+      measurementModes,
+      selected,
+      blockers
+    };
+  }
+
   async status() {
-    const [probe, audio, version, commands, playbackMode, measurementMode] = await Promise.all([
+    const [probe, audio, version, commands, playbackMode, measurementMode, contract] = await Promise.all([
       this.evoburrow.call('rew_probe', {}).catch(error => ({ unavailable: error.message })),
       this.evoburrow.call('rew_audio_inventory', {}).catch(error => ({ unavailable: error.message })),
       this.request('/version').catch(error => ({ unavailable: error.message })),
       this.request('/measure/commands').catch(error => ({ unavailable: error.message })),
-      this.request('/measure/playback-mode').catch(error => ({ unavailable: error.message })),
-      this.request('/measure/measurement-mode').catch(error => ({ unavailable: error.message }))
+      this.request('/measure/playback-mode').then(unwrapScalar).catch(error => ({ unavailable: error.message })),
+      this.request('/measure/measurement-mode').then(unwrapScalar).catch(error => ({ unavailable: error.message })),
+      this.measurementContract().catch(error => ({ valid: false, unavailable: error.message }))
     ]);
-    return { url: this.config.url, probe, audio, version, commands, playbackMode, measurementMode };
+    return { url: this.config.url, probe, audio, version, commands, playbackMode, measurementMode, contract };
   }
 
   async detectAutoMeasureCapability() {
     if (this.config.measurementMode === 'manual') {
       return { automated: false, mode: 'manual', reason: 'REW_MEASUREMENT_MODE=manual' };
     }
-    const commands = await this.request('/measure/commands');
-    const spl = Array.isArray(commands) ? commands.find(command => /^SPL$/i.test(String(command))) : null;
-    if (!spl) return { automated: false, mode: this.config.measurementMode, reason: 'REW does not advertise an SPL measurement command.' };
+    const contract = await this.measurementContract();
+    if (!contract.valid) {
+      return { automated: false, mode: this.config.measurementMode, reason: contract.blockers.join(' '), contract };
+    }
     return {
       automated: this.config.measurementMode === 'pro',
       mode: this.config.measurementMode,
       probeOnly: this.config.measurementMode === 'auto',
-      command: spl,
+      command: contract.selected.command,
+      contract,
       note: 'REW requires a Pro upgrade to trigger automated sweep measurements through the API. In auto mode the license is confirmed only when an actual measurement is attempted.'
     };
   }
@@ -68,17 +136,38 @@ export class RewAdapter {
     return this.evoburrow.call('rew_input_level_check', { durationMs, confirm });
   }
 
-  async configureFilePlayback({ stimulusPath, measurementMode = 'SPL', playbackMode = 'From file' }) {
+  async configureFilePlayback({ stimulusPath }) {
     if (!stimulusPath) throw new Error('stimulusPath is required');
+    const contract = await this.measurementContract();
+    if (!contract.valid) {
+      throw new CapabilityError('Installed REW does not expose the required Measure From File contract', contract);
+    }
+
     await this.request('/measure/file-playback-stimulus', { method: 'POST', body: stimulusPath });
-    await this.request('/measure/playback-mode', { method: 'POST', body: playbackMode });
-    await this.request('/measure/measurement-mode', { method: 'POST', body: measurementMode });
+    await this.request('/measure/playback-mode', { method: 'POST', body: contract.selected.playbackMode });
+    await this.request('/measure/measurement-mode', { method: 'POST', body: contract.selected.measurementMode });
+
     const [stimulus, actualPlayback, actualMeasurement] = await Promise.all([
-      this.request('/measure/file-playback-stimulus'),
-      this.request('/measure/playback-mode'),
-      this.request('/measure/measurement-mode')
+      this.request('/measure/file-playback-stimulus').then(unwrapScalar),
+      this.request('/measure/playback-mode').then(unwrapScalar),
+      this.request('/measure/measurement-mode').then(unwrapScalar)
     ]);
-    return { configured: true, stimulus, playbackMode: actualPlayback, measurementMode: actualMeasurement };
+    const verified = String(actualPlayback).toLowerCase() === String(contract.selected.playbackMode).toLowerCase()
+      && String(actualMeasurement).toLowerCase() === String(contract.selected.measurementMode).toLowerCase();
+    if (!verified) {
+      throw new CapabilityError('REW did not retain the requested Measure From File configuration', {
+        expected: contract.selected,
+        actual: { stimulus, playbackMode: actualPlayback, measurementMode: actualMeasurement }
+      });
+    }
+    return {
+      configured: true,
+      verified,
+      stimulus,
+      playbackMode: actualPlayback,
+      measurementMode: actualMeasurement,
+      contract
+    };
   }
 
   async listMeasurements() {
@@ -86,7 +175,7 @@ export class RewAdapter {
   }
 
   async measurementKeys() {
-    return asEntries(await this.listMeasurements()).map(([id, value]) => value?.uuid || id);
+    return asEntries(await this.listMeasurements()).map(([id, value]) => measurementKey(id, value));
   }
 
   async prepareMeasurementMetadata({ title, notes, startDelaySeconds = 2 }) {
@@ -114,13 +203,16 @@ export class RewAdapter {
       };
     }
 
+    const contract = await this.measurementContract();
+    if (!contract.valid) throw new CapabilityError('REW measurement contract is incomplete', contract);
+
     try {
       await this.request('/measure/command', {
         method: 'POST',
-        body: { command: 'SPL', parameters: [] },
+        body: { command: contract.selected.command },
         timeoutMs: 10000
       });
-      return { started: true, manualRequired: false, beforeMeasurementKeys };
+      return { started: true, manualRequired: false, beforeMeasurementKeys, command: contract.selected.command };
     } catch (error) {
       if (error.status === 401 || /Pro upgrade/i.test(error.message)) {
         if (this.config.measurementMode === 'pro') throw error;
@@ -141,8 +233,11 @@ export class RewAdapter {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       const current = asEntries(await this.listMeasurements());
-      const fresh = current.filter(([id, value]) => !before.has(value?.uuid || id));
-      if (fresh.length === 1) return { id: fresh[0][0], summary: fresh[0][1] };
+      const fresh = current.filter(([id, value]) => !before.has(measurementKey(id, value)));
+      if (fresh.length === 1) {
+        const [id, summary] = fresh[0];
+        return { id: measurementKey(id, summary), summary };
+      }
       if (fresh.length > 1) throw new Error(`expected one new REW measurement, found ${fresh.length}`);
       await new Promise(resolve => setTimeout(resolve, 500));
     }
@@ -152,14 +247,15 @@ export class RewAdapter {
   async captureNewMeasurement({ beforeMeasurementKeys }) {
     const before = new Set(beforeMeasurementKeys || []);
     const current = asEntries(await this.listMeasurements());
-    const fresh = current.filter(([id, value]) => !before.has(value?.uuid || id));
+    const fresh = current.filter(([id, value]) => !before.has(measurementKey(id, value)));
     if (fresh.length !== 1) {
       throw new CapabilityError(`expected exactly one new REW measurement, found ${fresh.length}`, {
         before: [...before],
         currentCount: current.length
       });
     }
-    return { id: fresh[0][0], summary: fresh[0][1] };
+    const [id, summary] = fresh[0];
+    return { id: measurementKey(id, summary), summary };
   }
 
   async trace(id, kind = 'frequency-response') {
