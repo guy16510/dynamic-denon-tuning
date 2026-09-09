@@ -36,20 +36,27 @@ export class MeasurementService {
     };
   }
 
-  async buildRecord({ sessionId, position, channel, captured, shieldFile = null, playback = null, atmos = null, manualCapture = false }) {
+  async buildRecord({ sessionId, position, channel, captured, shieldFile = null, playback = null, atmos = null, manualCapture = false, measurementType = 'verification' }) {
     const [frequency, impulse, distortion] = await Promise.all([
       this.rew.trace(captured.id, 'frequency-response'),
       this.rew.trace(captured.id, 'impulse-response').catch(error => ({ unavailable: error.message })),
       this.rew.trace(captured.id, 'distortion').catch(error => ({ unavailable: error.message }))
     ]);
     const quality = validateTrace(frequency);
+    const allocation = await this.sessions.allocateMeasurementAttempt(sessionId, {
+      position,
+      channel,
+      rewId: String(captured.id)
+    });
     const record = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       capturedAt: new Date().toISOString(),
       position,
       channel,
+      measurementType,
       expectedChannel: channel,
       rewId: String(captured.id),
+      attempt: allocation.number,
       summary: captured.summary,
       shieldFile,
       ...(playback ? { shield: playback } : {}),
@@ -61,19 +68,41 @@ export class MeasurementService {
     const gate = validateMeasurementRecord(record);
     record.acceptedForOptimization = gate.valid && (atmos?.verified !== false);
     record.gate = gate;
-    const path = await this.sessions.writeJson(sessionId, `measurements/position-${position}/${channel}.json`, record);
+    const path = await this.sessions.writeJson(sessionId, allocation.relativePath, record);
+    let accepted = null;
+    if (record.acceptedForOptimization) {
+      accepted = await this.sessions.acceptMeasurementAttempt(sessionId, allocation.relativePath, record);
+    }
     await this.sessions.appendEvent(sessionId, manualCapture ? 'measurement.manual-captured' : 'measurement.completed', {
       position,
       channel,
+      measurementType,
+      attempt: allocation.number,
       rewId: record.rewId,
+      path: allocation.relativePath,
       accepted: record.acceptedForOptimization,
+      acceptedPointer: accepted?.pointerPath || null,
       atmosVerified: atmos?.verified ?? null,
       distortionAvailable: !distortion.unavailable
     });
-    return { completed: true, path, record };
+    return { completed: true, path, record, accepted };
   }
 
-  async measureChannel({ sessionId, position, channel, shieldFile, stimulusPath, title, notes, verifyAtmos = true }) {
+  async measureChannel({ sessionId, position, channel, shieldFile, stimulusPath, title, notes, verifyAtmos = true, expectedPreset = null, measurementType = 'verification' }) {
+    if (expectedPreset != null) {
+      const inspected = await this.denon.inspect();
+      const active = inspected?.presetStatus?.activeSpeakerPreset ?? null;
+      if (active !== expectedPreset) {
+        return {
+          completed: false,
+          blocked: true,
+          wrongPreset: true,
+          expectedPreset,
+          activePreset: active,
+          next: `Select Speaker Preset ${expectedPreset}, then resume.`
+        };
+      }
+    }
     await this.denon.requireSafeAudibleTest({ expectedInput: this.denon.config.shieldInput });
 
     const configuration = await this.rew.configureFilePlayback({ stimulusPath });
@@ -86,6 +115,8 @@ export class MeasurementService {
       await this.sessions.appendEvent(sessionId, 'measurement.manual-required', {
         position,
         channel,
+        measurementType,
+        expectedPreset,
         shieldFile,
         stimulusPath,
         started
@@ -95,6 +126,8 @@ export class MeasurementService {
         manualRequired: true,
         position,
         channel,
+        expectedPreset,
+        measurementType,
         configuration,
         ...started,
         next: 'Start the prepared measurement in REW so it is waiting for file playback, then resume this workflow. The resume step will start the Shield sweep and capture the result.'
@@ -107,13 +140,27 @@ export class MeasurementService {
       await new Promise(resolve => setTimeout(resolve, 500));
       const atmos = verifyAtmos ? await this.denon.verifyAtmos() : { verified: null, skipped: true };
       const captured = await this.rew.waitForNewMeasurement({ beforeMeasurementKeys: started.beforeMeasurementKeys });
-      return this.buildRecord({ sessionId, position, channel, captured, shieldFile, playback, atmos });
+      return this.buildRecord({ sessionId, position, channel, captured, shieldFile, playback, atmos, measurementType });
     } finally {
       await this.shield.stop().catch(() => {});
     }
   }
 
-  async captureManual({ sessionId, position, channel, beforeMeasurementKeys, shieldFile = null, verifyAtmos = true }) {
+  async captureManual({ sessionId, position, channel, beforeMeasurementKeys, shieldFile = null, verifyAtmos = true, expectedPreset = null, measurementType = 'verification' }) {
+    if (expectedPreset != null) {
+      const inspected = await this.denon.inspect();
+      const active = inspected?.presetStatus?.activeSpeakerPreset ?? null;
+      if (active !== expectedPreset) {
+        return {
+          completed: false,
+          blocked: true,
+          wrongPreset: true,
+          expectedPreset,
+          activePreset: active,
+          next: `Select Speaker Preset ${expectedPreset}, then resume.`
+        };
+      }
+    }
     await this.denon.requireSafeAudibleTest({ expectedInput: this.denon.config.shieldInput });
     let playback = null;
     try {
@@ -135,7 +182,8 @@ export class MeasurementService {
         shieldFile,
         playback,
         atmos,
-        manualCapture: true
+        manualCapture: true,
+        measurementType
       });
     } finally {
       if (playback) await this.shield.stop().catch(() => {});
