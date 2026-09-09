@@ -36,7 +36,9 @@ test('manual capture with a Shield file starts playback before waiting for REW e
       async verifyAtmos() { order.push('atmos'); return { verified: true }; }
     },
     sessions: {
+      async allocateMeasurementAttempt() { return { number: 1, relativePath: 'measurements/position-0/TFL/attempt-001-uuid-1.json' }; },
       async writeJson() { return '/tmp/measurement.json'; },
+      async acceptMeasurementAttempt() { return { pointerPath: 'measurements/position-0/TFL/accepted.json' }; },
       async appendEvent() {}
     }
   });
@@ -48,6 +50,7 @@ test('manual capture with a Shield file starts playback before waiting for REW e
     shieldFile: 'TFL.wav'
   });
   assert.equal(result.record.acceptedForOptimization, true);
+  assert.equal(result.record.attempt, 1);
   assert.ok(order.indexOf('shield-play') < order.indexOf('rew-wait'));
   assert.ok(order.includes('shield-stop'));
 });
