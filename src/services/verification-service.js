@@ -17,6 +17,19 @@ function micInstruction(position) {
   return `Move the microphone to verification position ${position}, matching the baseline position exactly.`;
 }
 
+function datasetDefinition(state) {
+  return {
+    positions: state.positions,
+    channels: state.channels,
+    topology: state.topology,
+    sweepManifestPath: state.sweepManifestPath
+  };
+}
+
+function sameDatasetDefinition(left, right) {
+  return JSON.stringify(datasetDefinition(left)) === JSON.stringify(datasetDefinition(right));
+}
+
 export class VerificationService {
   constructor({ denon, measurement, sessions }) {
     this.denon = denon;
@@ -62,8 +75,9 @@ export class VerificationService {
         throw new Error(`sweep manifest missing shieldFile/stimulusPath for ${channel}`);
       }
     }
-    const baseline = await this.createDataset({ preset: 1, positions, channels, sweepManifestPath: manifest.path, topology: topology || channels });
-    const candidate = await this.createDataset({ preset: 2, positions, channels, sweepManifestPath: manifest.path, topology: topology || channels });
+    const definition = { positions, channels: [...channels], sweepManifestPath: manifest.path, topology: topology ? [...topology] : [...channels] };
+    const baseline = await this.createDataset({ preset: 1, ...definition });
+    const candidate = await this.createDataset({ preset: 2, ...definition });
     return {
       baselineSessionId: baseline.session.id,
       candidateSessionId: candidate.session.id,
@@ -203,6 +217,18 @@ export class VerificationService {
     if (baselineState.status !== 'complete' || candidateState.status !== 'complete') {
       return { finalized: false, blocked: true, reason: 'Both preset verification datasets must be complete.', baselineState, candidateState };
     }
+    if (!sameDatasetDefinition(baselineState, candidateState)) {
+      return {
+        finalized: false,
+        blocked: true,
+        reason: 'Preset verification dataset definitions do not match. Comparison is prohibited.',
+        baselineDefinition: datasetDefinition(baselineState),
+        candidateDefinition: datasetDefinition(candidateState)
+      };
+    }
+    if (baselineState.preset !== 1 || candidateState.preset !== 2) {
+      return { finalized: false, blocked: true, reason: 'Verification preset identities are invalid.', baselinePreset: baselineState.preset, candidatePreset: candidateState.preset };
+    }
     const [baselineRecords, candidateRecords] = await Promise.all([
       this.sessions.readMeasurementRecords(baselineSessionId, { acceptedOnly: true }),
       this.sessions.readMeasurementRecords(candidateSessionId, { acceptedOnly: true })
@@ -223,6 +249,7 @@ export class VerificationService {
       verifiedAt: new Date().toISOString(),
       baselineSessionId,
       candidateSessionId,
+      datasetDefinition: datasetDefinition(baselineState),
       ...result
     });
     const reportPath = this.sessions.path(reportSessionId, 'report.md');
