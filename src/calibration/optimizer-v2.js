@@ -1,6 +1,6 @@
-import { compareCandidates } from './candidate.js';
+import { assessCandidateAcceptance } from './acceptance-v2.js';
 
-export const OPTIMIZER_ALGORITHM_VERSION = 'deterministic-search-v2.1';
+export const OPTIMIZER_ALGORITHM_VERSION = 'deterministic-search-v2.2';
 
 export function validateCandidateConstraints(candidate, constraints = {}) {
   const violations = [];
@@ -21,7 +21,7 @@ function evaluatedCandidate(candidate, result) {
   return Object.freeze({ ...candidate, measuredScore: score, score, evaluation: result, state: 'measured' });
 }
 
-export async function runDeterministicOptimization({ baseline, candidates, evaluate, constraints = {}, epsilon = 0.05, maximumCandidateCount = 200, noImprovementLimit = Infinity }) {
+export async function runDeterministicOptimization({ baseline, candidates, evaluate, constraints = {}, epsilon = 0.05, maximumCandidateCount = 200, noImprovementLimit = Infinity, defaultMajorRegression = 8, majorRegressionThresholds = {} }) {
   if (!baseline || !Number.isFinite(Number(baseline.measuredScore ?? baseline.score))) throw new Error('baseline requires a measured score');
   if (typeof evaluate !== 'function') throw new Error('deterministic evaluator is required');
   let champion = Object.freeze({ ...baseline, measuredScore: Number(baseline.measuredScore ?? baseline.score), score: Number(baseline.measuredScore ?? baseline.score) });
@@ -34,20 +34,23 @@ export async function runDeterministicOptimization({ baseline, candidates, evalu
     if (!gate.valid) {
       history.push({ candidateId: candidate.candidateId, sequence: candidate.sequence, decision: 'REJECT', reason: 'constraint', violations: gate.violations });
       noImprovement += 1;
+      if (noImprovement >= noImprovementLimit) break;
       continue;
     }
     const measured = evaluatedCandidate(candidate, await evaluate(candidate));
-    const ranked = [champion, measured].sort((a, b) => compareCandidates(a, b, epsilon));
-    const wins = ranked[0].candidateId === measured.candidateId && measured.measuredScore > champion.measuredScore + epsilon;
-    if (wins) {
-      history.push({ candidateId: measured.candidateId, sequence: measured.sequence, score: measured.measuredScore, delta: measured.measuredScore - champion.measuredScore, decision: 'ACCEPT', previousChampion: champion.candidateId });
+    const acceptance = assessCandidateAcceptance(champion, measured, { epsilon, defaultMajorRegression, majorRegressionThresholds });
+    if (acceptance.accepted) {
+      history.push({ candidateId: measured.candidateId, sequence: measured.sequence, score: measured.measuredScore, delta: acceptance.delta, decision: 'ACCEPT', reason: acceptance.reason, previousChampion: champion.candidateId, regressions: [] });
       champion = measured;
       noImprovement = 0;
     } else {
-      history.push({ candidateId: measured.candidateId, sequence: measured.sequence, score: measured.measuredScore, delta: measured.measuredScore - champion.measuredScore, decision: 'REJECT', reason: 'not-better' });
+      history.push({ candidateId: measured.candidateId, sequence: measured.sequence, score: measured.measuredScore, delta: acceptance.delta, decision: 'REJECT', reason: acceptance.reason, regressions: acceptance.regressions });
       noImprovement += 1;
     }
     if (noImprovement >= noImprovementLimit) break;
   }
-  return Object.freeze({ algorithmVersion: OPTIMIZER_ALGORITHM_VERSION, champion, history, evaluatedCount: history.length, converged: history.length < candidates.length || history.length >= budget });
+  const stoppedByBudget = history.length >= budget && budget < candidates.length;
+  const stoppedByNoImprovement = noImprovement >= noImprovementLimit;
+  const exhaustedCandidates = history.length >= candidates.length;
+  return Object.freeze({ algorithmVersion: OPTIMIZER_ALGORITHM_VERSION, champion, history, evaluatedCount: history.length, converged: exhaustedCandidates || stoppedByNoImprovement, stopReason: exhaustedCandidates ? 'candidate-space-exhausted' : stoppedByNoImprovement ? 'no-meaningful-improvement' : stoppedByBudget ? 'candidate-budget' : 'completed' });
 }

@@ -2,6 +2,13 @@ import { readFile } from 'node:fs/promises';
 import { canonicalJson, sha256 } from '../lib/canonical-json.js';
 import { DEFAULT_WEIGHTS } from './score.js';
 
+function deepFreeze(value) {
+  if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
+  Object.freeze(value);
+  for (const child of Object.values(value)) deepFreeze(child);
+  return value;
+}
+
 export function validateTargetProfile(profile) {
   if (!profile || typeof profile !== 'object') throw new Error('target profile must be an object');
   if (!profile.name || !Number.isInteger(profile.version)) throw new Error('target profile requires name and integer version');
@@ -18,9 +25,9 @@ export function validateTargetProfile(profile) {
 
 export function lockTargetProfile(profile) {
   validateTargetProfile(profile);
-  const snapshot = structuredClone(profile);
+  const snapshot = deepFreeze(structuredClone(profile));
   const canonical = canonicalJson(snapshot);
-  return Object.freeze({ snapshot: Object.freeze(snapshot), canonical, sha256: sha256(canonical) });
+  return Object.freeze({ snapshot, canonical, sha256: sha256(canonical) });
 }
 
 export async function loadAndLockTargetProfile(path) {
