@@ -1,7 +1,7 @@
 import { loadConfig } from '../config.js';
 import { EvoBurrowAdapter } from '../adapters/evoburrow.js';
 import { DenonAdapter } from '../adapters/denon.js';
-import { RewAdapter } from '../adapters/rew.js';
+import { RewV2Adapter } from '../adapters/rew-v2.js';
 import { ShieldAdapter } from '../adapters/shield.js';
 import { NexusAdapter } from '../adapters/nexus.js';
 import { SessionStore } from '../lib/session-store.js';
@@ -17,7 +17,7 @@ export function createDashboardRuntime(config = loadConfig()) {
   const sessions = new SessionStore(config.sessionsDir);
   const evoburrow = new EvoBurrowAdapter(config.evoburrow);
   const denon = new DenonAdapter(config.denon, evoburrow);
-  const rew = new RewAdapter(config.rew, evoburrow);
+  const rew = new RewV2Adapter(config.rew, evoburrow);
   const shield = new ShieldAdapter(config.shield);
   const nexus = new NexusAdapter(config.nexus);
   const measurement = new MeasurementService({ rew, shield, denon, sessions });
