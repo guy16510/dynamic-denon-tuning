@@ -1,15 +1,19 @@
 {
   "name": "dynamic-denon-tuning",
-  "version": "0.4.0",
-  "description": "Codex-controlled, evidence-gated auto-tuning orchestrator for Denon Atmos theaters",
+  "version": "0.5.0",
+  "description": "Deterministic, evidence-gated auto-tuning orchestrator for Denon Atmos theaters",
   "type": "module",
   "private": true,
+  "workspaces": ["web"],
   "engines": {
     "node": ">=22"
   },
   "scripts": {
     "start": "node src/index.js",
-    "check": "find src test -name '*.js' -print0 | xargs -0 -n1 node --check",
+    "dashboard": "node src/dashboard/cli.js",
+    "dashboard:dev": "npm --workspace web run dev",
+    "dashboard:build": "npm --workspace web run build",
+    "check": "find src test tools -name '*.js' -print0 | xargs -0 -n1 node --check",
     "test": "node --test"
   },
   "dependencies": {

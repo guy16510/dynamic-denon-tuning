@@ -1,0 +1,13 @@
+[
+  {"name":"good-integration","synthetic":true,"baseline":{"value":80},"candidates":[{"candidateId":"candidate-0001","value":84}]},
+  {"name":"bad-crossover-null","synthetic":true,"baseline":{"value":82,"components":[{"name":"crossoverIntegration","score":90}]},"candidates":[{"candidateId":"candidate-0001","value":85,"components":[{"name":"crossoverIntegration","score":70}]}]},
+  {"name":"sub-delay-error","synthetic":true,"baseline":{"value":70},"candidates":[{"candidateId":"candidate-0001","value":78}]},
+  {"name":"speaker-delay-error","synthetic":true,"baseline":{"value":72},"candidates":[{"candidateId":"candidate-0001","value":79}]},
+  {"name":"response-peak","synthetic":true,"baseline":{"value":76},"candidates":[{"candidateId":"candidate-0001","value":81}]},
+  {"name":"response-dip","synthetic":true,"baseline":{"value":74},"candidates":[{"candidateId":"candidate-0001","value":80}]},
+  {"name":"seat-inconsistency","synthetic":true,"baseline":{"value":73},"candidates":[{"candidateId":"candidate-0001","value":77}]},
+  {"name":"mirror-channel-inconsistency","synthetic":true,"baseline":{"value":75},"candidates":[{"candidateId":"candidate-0001","value":79}]},
+  {"name":"candidate-improvement","synthetic":true,"baseline":{"value":80},"candidates":[{"candidateId":"candidate-0001","value":82},{"candidateId":"candidate-0002","value":85}]},
+  {"name":"candidate-regression","synthetic":true,"baseline":{"value":80},"candidates":[{"candidateId":"candidate-0001","value":79},{"candidateId":"candidate-0002","value":80.01}]},
+  {"name":"illegal-receiver-value","synthetic":true,"baseline":{"value":80},"candidates":[{"candidateId":"candidate-0001","value":95,"legal":false}]}
+]
