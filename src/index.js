@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { loadConfig } from './config.js';
 import { EvoBurrowAdapter } from './adapters/evoburrow.js';
 import { DenonAdapter } from './adapters/denon.js';
-import { RewAdapter } from './adapters/rew.js';
+import { RewV2Adapter } from './adapters/rew-v2.js';
 import { ShieldAdapter } from './adapters/shield.js';
 import { NexusAdapter } from './adapters/nexus.js';
 import { SessionStore } from './lib/session-store.js';
@@ -14,6 +14,12 @@ import { TheaterService } from './services/theater-service.js';
 import { HardwareProofService } from './services/hardware-proof-service.js';
 import { VerificationService } from './services/verification-service.js';
 import { AutotuneOrchestrator } from './services/autotune-orchestrator.js';
+import { LiveEventBus } from './services/live-event-bus.js';
+import { V2EventStore } from './services/v2-event-store.js';
+import { CalibrationStateMachine } from './services/calibration-state-machine.js';
+import { CalibrationV2Service } from './services/calibration-v2-service.js';
+import { NativeMeasurementProbeService } from './services/native-measurement-probe-service.js';
+import { AudysseyRewImportService } from './services/audyssey-rew-import-service.js';
 import { scoreCalibration, DEFAULT_WEIGHTS } from './calibration/score.js';
 import { compareScores } from './calibration/compare.js';
 import { deriveCalibrationMetrics } from './calibration/derive-metrics.js';
@@ -21,12 +27,13 @@ import { detectTopology } from './calibration/topology.js';
 import { validateMatchedCoverage, finalizeMeasuredComparison } from './calibration/verification.js';
 import { crossoverCandidates, proposeDelayAdjustment } from './calibration/optimize.js';
 import { serializeError } from './lib/errors.js';
+import { registerV2Tools } from './mcp/register-v2-tools.js';
 
 const config = loadConfig();
 const sessions = new SessionStore(config.sessionsDir);
 const evoburrow = new EvoBurrowAdapter(config.evoburrow);
 const denon = new DenonAdapter(config.denon, evoburrow);
-const rew = new RewAdapter(config.rew, evoburrow);
+const rew = new RewV2Adapter(config.rew, evoburrow);
 const shield = new ShieldAdapter(config.shield);
 const nexus = new NexusAdapter(config.nexus);
 const measurement = new MeasurementService({ rew, shield, denon, sessions });
@@ -34,8 +41,14 @@ const theater = new TheaterService({ config, evoburrow, denon, rew, shield, nexu
 const hardwareProof = new HardwareProofService({ denon, rew, shield, measurement, sessions });
 const verification = new VerificationService({ denon, measurement, sessions });
 const autotune = new AutotuneOrchestrator({ theater, verification });
+const v2Bus = new LiveEventBus();
+const v2Events = new V2EventStore({ sessions, bus: v2Bus });
+const v2StateMachine = new CalibrationStateMachine({ events: v2Events });
+const v2Calibration = new CalibrationV2Service({ config, sessions, events: v2Events, stateMachine: v2StateMachine, theater, denon, shield });
+const nativeProbe = new NativeMeasurementProbeService({ config, sessions });
+const audysseyRewImport = new AudysseyRewImportService(rew);
 
-const server = new McpServer({ name: 'denon-atmos-autotune', version: '0.4.0' });
+const server = new McpServer({ name: 'denon-atmos-autotune', version: '0.5.0' });
 
 function response(data, isError = false) {
   return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }], isError };
@@ -59,6 +72,7 @@ function missingDerivedMetrics(derived) {
   return Object.keys(DEFAULT_WEIGHTS).filter(name => !Number.isFinite(derived?.metrics?.[name]));
 }
 
+// V1 surface remains available for existing MCP clients.
 server.tool('theater_inspect', 'Read-only inspection of EvoBurrow, Denon, REW, Shield, active topology, preset state, and automation blockers.', {}, guarded(async () => theater.inspect()));
 server.tool('theater_detect_topology', 'Normalize active speaker channels from read-only Denon/EvoBurrow inspection. If detection is ambiguous, supply explicit channels. Protected topology settings are never written.', { channels: z.array(z.string()).min(1).max(20).optional() }, guarded(async ({ channels }) => detectTopology(await denon.inspect(), channels || null)));
 server.tool('theater_snapshot', 'Capture a read-only Denon baseline and optionally persist it inside an existing immutable calibration session.', { sessionId: z.string().optional() }, guarded(async ({ sessionId }) => theater.snapshot(sessionId)));
@@ -117,9 +131,25 @@ server.tool('calibration_compare_sessions', 'Compare two measured sessions only 
   const candidate = await deriveSessionEvidence(candidateSessionId);
   return { compared: true, coverage, baseline, candidate, comparison: compareScores(baseline.score, candidate.score, { minimumGain, majorRegression }), missing: { baseline: missingDerivedMetrics(baseline.derived), candidate: missingDerivedMetrics(candidate.derived) } };
 }));
-server.tool('calibration_compare_scores', 'Apply the acceptance rule to supplied component scores for analysis only. This cannot finalize or recommend a preset without measured session verification.', { baselineMetrics: z.record(z.number()), candidateMetrics: z.record(z.number()), minimumGain: z.number().min(0).max(20).default(0.5), majorRegression: z.number().min(1).max(30).default(8) }, guarded(async ({ baselineMetrics, candidateMetrics, minimumGain, majorRegression }) => { const baseline = scoreCalibration(baselineMetrics); const candidate = scoreCalibration(candidateMetrics); return { baseline, candidate, comparison: compareScores(baseline, candidate, { minimumGain, majorRegression }), advisoryOnly: true }; }));
+server.tool('calibration_compare_scores', 'Apply the acceptance rule to supplied component scores for analysis only. This cannot finalize or recommend a preset without measured session verification.', { baselineMetrics: z.record(z.number()), candidateMetrics: z.record(z.number()), minimumGain: z.number().min(0).max(20).default(0.5), majorRegression: z.number().min(1).max(30).default(8) }, guarded(async ({ baselineMetrics, candidateMetrics, minimumGain, majorRegression }) => {
+  const baseline = scoreCalibration(baselineMetrics);
+  const candidate = scoreCalibration(candidateMetrics);
+  return { baseline, candidate, comparison: compareScores(baseline, candidate, { minimumGain, majorRegression }), advisoryOnly: true };
+}));
 server.tool('calibration_crossover_candidates', 'Generate bounded crossover candidates from measured speaker extension. Proposals require real summed-response verification.', { f3Hz: z.number().positive().optional(), currentHz: z.number().positive().optional(), role: z.string().default('speaker') }, guarded(async args => ({ candidatesHz: crossoverCandidates(args), rule: 'Test and re-measure each candidate, do not accept from prediction alone.' })));
 server.tool('calibration_delay_candidate', 'Translate measured arrival-time offset into a candidate AVR distance/delay adjustment. Proposal only.', { measuredOffsetMs: z.number(), currentDistanceMeters: z.number().min(0).max(18) }, guarded(async args => proposeDelayAdjustment(args)));
+
+// V2 uses the same adapters and application services as the dashboard. No optimization logic lives in handlers.
+registerV2Tools(server, {
+  config,
+  sessions,
+  theater,
+  denon,
+  calibration: v2Calibration,
+  nativeProbe,
+  audysseyRewImport,
+  guarded
+});
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
