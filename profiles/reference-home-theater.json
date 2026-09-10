@@ -1,0 +1,34 @@
+{
+  "name": "reference-home-theater",
+  "version": 1,
+  "frequencyTarget": {
+    "source": "defined-curve",
+    "points": [
+      { "hz": 20, "db": 5 },
+      { "hz": 80, "db": 3 },
+      { "hz": 500, "db": 0 },
+      { "hz": 2000, "db": 0 },
+      { "hz": 10000, "db": -1.5 },
+      { "hz": 20000, "db": -3 }
+    ]
+  },
+  "weights": {
+    "bassIntegration": 0.25,
+    "crossoverIntegration": 0.20,
+    "timing": 0.15,
+    "frequencyResponse": 0.15,
+    "channelConsistency": 0.10,
+    "seatConsistency": 0.10,
+    "headroom": 0.05
+  },
+  "seats": [
+    { "position": 0, "label": "Main listening position", "weight": 0.5 },
+    { "position": 1, "label": "Adjacent left", "weight": 0.25 },
+    { "position": 2, "label": "Adjacent right", "weight": 0.25 }
+  ],
+  "constraints": {
+    "majorRegression": 8,
+    "equivalentScoreEpsilon": 0.05,
+    "minimumMeaningfulGain": 0.1
+  }
+}
