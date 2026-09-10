@@ -1,0 +1,13 @@
+node_modules/
+.env
+.DS_Store
+sessions/*
+!sessions/.gitkeep
+calibration-files/*
+!calibration-files/.gitkeep
+sweeps/*
+!sweeps/.gitkeep
+*.mdat
+*.ady
+*.oca
+*.avr
