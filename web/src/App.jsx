@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import ReactECharts from 'echarts-for-react';
+import React, { useEffect, useState } from 'react';
+import ResponsePlot from './ResponsePlot.jsx';
 
 async function api(path, options) {
   const response = await fetch(path, { headers: { 'content-type': 'application/json' }, ...options });
@@ -28,7 +28,6 @@ export default function App() {
   useEffect(() => { refresh(); }, []);
   useEffect(() => {
     const source = new EventSource('/api/events');
-    source.onmessage = event => setEvents(previous => [JSON.parse(event.data), ...previous].slice(0, 100));
     const handler = event => { try { setEvents(previous => [JSON.parse(event.data), ...previous].slice(0, 100)); refresh(); } catch {} };
     ['session.state-changed','measurement.completed','candidate.generated','candidate.accepted','candidate.rejected','champion.changed','operator.action-required'].forEach(type => source.addEventListener(type, handler));
     return () => source.close();
@@ -42,17 +41,6 @@ export default function App() {
   const command = async name => { try { setActive(await api(`/api/calibration/${encodeURIComponent(active.id)}/${name}`, { method: 'POST', body: '{}' })); await refresh(); } catch (e) { setError(e.message); } };
 
   const metricRows = active?.champion?.score?.components || [];
-  const chartOption = useMemo(() => ({
-    animation: false,
-    tooltip: { trigger: 'axis' },
-    legend: { data: ['Target','Baseline','Current','Champion'], textStyle: { color: '#c8d1dc' } },
-    grid: { left: 52, right: 24, top: 48, bottom: 54 },
-    xAxis: { type: 'log', min: 20, max: 20000, name: 'Hz', axisLabel: { color: '#93a1b1' }, nameTextStyle: { color: '#93a1b1' } },
-    yAxis: { type: 'value', name: 'dB', axisLabel: { color: '#93a1b1' }, nameTextStyle: { color: '#93a1b1' } },
-    dataZoom: [{ type: 'inside' }, { type: 'slider', height: 18 }],
-    series: ['Target','Baseline','Current','Champion'].map(name => ({ name, type: 'line', showSymbol: false, data: active?.champion?.plots?.[name.toLowerCase()] || [] }))
-  }), [active]);
-
   return <main>
     <header><div><p className="eyebrow">DENON AVR-X3700H / ACM1HB</p><h1>Dynamic Theater Optimization</h1><p className="sub">Deterministic tuning with measurement evidence, not LLM-selected settings.</p></div><button className="primary" onClick={start}>START THEATER OPTIMIZATION</button></header>
     {error && <div className="error">{error}</div>}
@@ -66,8 +54,8 @@ export default function App() {
       <div className="panel wide">
         <div className="panel-title"><h2>Live tuning</h2><StateBadge value={active?.state} /></div>
         <div className="scores"><Score label="Baseline" value={active?.baselineScore}/><Score label="Current" value={active?.currentScore}/><Score label="Champion" value={active?.champion?.score?.value}/></div>
-        <ReactECharts option={chartOption} style={{ height: 360 }} />
-        <p className="note">Scoring smoothing and the target profile are locked to the session. Plot controls do not change the objective.</p>
+        <ResponsePlot plots={active?.champion?.plots || {}} />
+        <p className="note">Drag across the chart to zoom, double-click to reset. Visualization does not modify the locked scoring objective.</p>
       </div>
       <aside className="panel">
         <div className="panel-title"><h2>Session</h2></div>
@@ -78,7 +66,7 @@ export default function App() {
       <div className="panel"><div className="panel-title"><h2>Component scores</h2></div>{metricRows.length ? metricRows.map(item => <div className="metric" key={item.name}><span>{item.name}</span><strong>{item.score ?? 'N/A'}</strong><small>{item.confidence || 'unknown'}</small></div>) : <p>No measured candidate score yet. Unavailable dimensions remain N/A, never fabricated.</p>}</div>
       <div className="panel wide"><div className="panel-title"><h2>Evidence and decisions</h2></div><table><thead><tr><th>#</th><th>Event</th><th>Detail</th></tr></thead><tbody>{events.filter(event => !active || event.sessionId === active.id).map(event => <tr key={`${event.sessionId}-${event.sequence}`}><td>{event.sequence}</td><td>{event.type}</td><td><code>{JSON.stringify(event.data)}</code></td></tr>)}</tbody></table></div>
     </section>
-    <section className="panel"><div className="panel-title"><h2>Sessions</h2></div><div className="session-list">{sessions.map(session => <button key={session.id} className="session" onClick={async () => { setActive(await api(`/api/sessions/${encodeURIComponent(session.id)}`)); setEvents(await api(`/api/sessions/${encodeURIComponent(session.id)}/events`)); }}><span>{session.id}</span><StateBadge value={session.state}/></button>)}</div></section>
+    <section className="panel"><div className="panel-title"><h2>Sessions</h2></div><div className="session-list">{sessions.map(session => <button key={session.id} className="session" onClick={async () => { setActive(await api(`/api/sessions/${encodeURIComponent(session.id)}`)); setEvents((await api(`/api/sessions/${encodeURIComponent(session.id)}/events`)).reverse()); }}><span>{session.id}</span><StateBadge value={session.state}/></button>)}</div></section>
     <footer>BEST means the highest-scoring measured candidate found inside the declared search space under the locked objective, with no safety or major-regression violations.</footer>
   </main>;
 }
